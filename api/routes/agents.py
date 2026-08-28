@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from services import agents_service, auth_service, event_emitter, internal_auth, supabase_client
@@ -208,9 +208,27 @@ def journey_state(lead_ref: int, body: JourneyStateBody, request: Request) -> di
 def journey_event_internal(
     lead_ref: int, body: JourneyEventBody,
     x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
 ) -> dict:
     internal_auth.authorize_webhook_token(x_webhook_token)
-    return record_journey_event(lead_ref, body, None)
+    return record_journey_event(lead_ref, body, x_brain_actor_id)
+
+
+@internal_router.post("/leads/{lead_ref}/journey-state")
+def journey_state_internal(
+    lead_ref: int,
+    body: JourneyStateBody,
+    offering: str = Query("sales", pattern="^(sales|appointment)$"),
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+) -> dict:
+    internal_auth.authorize_webhook_token(x_webhook_token)
+    return set_journey_state(
+        lead_ref,
+        body,
+        x_brain_actor_id,
+        offering=offering,
+    )
 
 
 @router.post("/leads/{lead_ref}/purchase-completed")

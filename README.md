@@ -1,7 +1,8 @@
 # brain-conversation-runtime
 
-Decisão, GraphRAG, ledger, proof, journeys, qualificação, agents e WA Validator.
-Extraído de `brain-plataform` no SHA `b6ee5edc884e233cc0ff41798f4c19239e04fd88`.
+Decisao, GraphRAG, ledger, proof, journeys, qualificacao, agents e WA Validator.
+Extraido de `brain-plataform` no SHA `b6ee5edc884e233cc0ff41798f4c19239e04fd88`.
 
-Deploy não executa migrations. Readiness exige schema mínimo 130 e a credencial
-`BRAIN_RUNTIME_DB_KEY`, pertencente à role `brain_runtime`.
+Deploy nao executa migrations. Readiness exige schema minimo 130 e `BRAIN_DB_JWT`
+com claim `role=brain_runtime`; `service_role` e recusada. Endpoints internos
+ficam sob `/internal/v1/*` e exigem `AI_BRAIN_WEBHOOK_TOKEN`.

@@ -31,6 +31,7 @@ PUBLIC_EXACT_PATHS = {
     # The handler performs constant-time X-Webhook-Token validation.
     "/internal/v1/agents/leads/{lead_ref}/purchase-completed",
     "/internal/v1/agents/leads/{lead_ref}/journey-events",
+    "/internal/v1/agents/leads/{lead_ref}/journey-state",
 }
 
 ADMIN_TOKEN_HEADER = "x-ai-brain-admin-token"
@@ -101,7 +102,7 @@ def is_public_path(path: str) -> bool:
     if path in PUBLIC_EXACT_PATHS:
         return True
     if path.startswith("/internal/v1/agents/leads/"):
-        for suffix in ("/purchase-completed", "/journey-events"):
+        for suffix in ("/purchase-completed", "/journey-events", "/journey-state"):
             if path.endswith(suffix):
                 return path.removeprefix("/internal/v1/agents/leads/").removesuffix(
                     suffix
