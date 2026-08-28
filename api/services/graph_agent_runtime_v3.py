@@ -3713,22 +3713,24 @@ def build_context(
     shared_memory = shared_lead_memory.project_shared_lead_memory(
         batch=batch, document=document, messages=messages,
     )
-    ledger = batch.get("ledger") or None
+    # A shadow session is a clean synthetic conversation against one compiled
+    # candidate. Never import active-publication ledger/fact state into it.
+    ledger = None if publication_id else (batch.get("ledger") or None)
     if ledger:
         ledger["facts_by_key"] = _facts_by_key(batch.get("facts") or [])
-    ledger = ledger or supabase_client.get_conversation_ledger(str(persona["id"]), lead_ref) or {
+    ledger = ledger or (None if publication_id else supabase_client.get_conversation_ledger(str(persona["id"]), lead_ref)) or {
         "active_branch_node_id": None, "publication_id": publication["id"],
         "graph_checksum": publication["checksum"], "revision": 0,
         "asked_question_node_ids": [], "facts": {}, "facts_by_key": {},
     }
-    journey = batch.get("journey") or supabase_client.get_current_conversation_journey(
+    journey = ({} if publication_id else batch.get("journey")) or (None if publication_id else supabase_client.get_current_conversation_journey(
         str(persona["id"]), lead_ref,
-    ) or {}
+    )) or {}
     latest_journey: dict[str, Any] = {}
     if not journey:
-        latest_journey = supabase_client.get_latest_conversation_journey(
+        latest_journey = ({} if publication_id else supabase_client.get_latest_conversation_journey(
             str(persona["id"]), lead_ref,
-        ) or {}
+        )) or {}
         if latest_journey and latest_journey.get("is_current") is False:
             journey = {
                 "id": None,
