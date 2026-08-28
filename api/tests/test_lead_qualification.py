@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -84,7 +84,7 @@ def test_model_fields_append_name_and_address_without_overwriting_state():
                 "delivery_address": {
                     "street": "Rua sugerida",
                     "number": "123",
-                    "city": "SÃ£o Paulo",
+                    "city": "São Paulo",
                 },
             },
         },
@@ -95,7 +95,7 @@ def test_model_fields_append_name_and_address_without_overwriting_state():
     assert state["address"] == {
         "street": "Rua existente",
         "number": "123",
-        "city": "SÃ£o Paulo",
+        "city": "São Paulo",
     }
 
 
@@ -104,7 +104,7 @@ def test_complete_model_fields_make_sales_lead_qualified_but_not_opportunity():
         {"items": [{"product_slug": "produto-1", "quantity": 1, "unit_price": 10}]},
         {
             "fields": {
-                "customer_name": "VitÃ³ria",
+                "customer_name": "Vitória",
                 "delivery_address": {"street": "Rua A", "number": "10"},
             },
         },
@@ -142,4 +142,3 @@ def test_complaint_does_not_receive_commercial_signals():
     assert qualification["score"] == 5
     assert [item["key"] for item in qualification["signals"]] == ["first_contact"]
     assert stage == "contatado"
-

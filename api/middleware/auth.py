@@ -22,15 +22,16 @@ PUBLIC_EXACT_PATHS = {
     "/webhooks/whatsapp/inbound",
     "/webhooks/whatsapp/status",
     "/internal/whatsapp/outbound-result",
-    "/internal/conversations/context",
-    "/internal/conversations/decide",
-    "/internal/conversations/commit",
-    "/internal/conversations/fail-safe-handoff",
-    "/internal/conversations/technical-failure",
+    "/internal/v1/conversations/context",
+    "/internal/v1/conversations/decide",
+    "/internal/v1/conversations/commit",
+    "/internal/v1/conversations/fail-safe-handoff",
+    "/internal/v1/conversations/technical-failure",
     # Integration-authenticated equivalent of the operator conversion route.
     # The handler performs constant-time X-Webhook-Token validation.
-    "/internal/agents/leads/{lead_ref}/purchase-completed",
-    "/internal/agents/leads/{lead_ref}/journey-events",
+    "/internal/v1/agents/leads/{lead_ref}/purchase-completed",
+    "/internal/v1/agents/leads/{lead_ref}/journey-events",
+    "/internal/v1/agents/leads/{lead_ref}/journey-state",
 }
 
 ADMIN_TOKEN_HEADER = "x-ai-brain-admin-token"
@@ -100,10 +101,16 @@ def is_public_path(path: str) -> bool:
         return True
     if path in PUBLIC_EXACT_PATHS:
         return True
-    if path.startswith("/internal/agents/leads/"):
-        for suffix in ("/purchase-completed", "/journey-events"):
+    if path.startswith("/internal/v1/runtime/leads/"):
+        for suffix in ("/pause", "/resume", "/acknowledge-handoff", "/handoff"):
             if path.endswith(suffix):
-                return path.removeprefix("/internal/agents/leads/").removesuffix(
+                return path.removeprefix("/internal/v1/runtime/leads/").removesuffix(
+                    suffix
+                ).strip("/").isdigit()
+    if path.startswith("/internal/v1/agents/leads/"):
+        for suffix in ("/purchase-completed", "/journey-events", "/journey-state"):
+            if path.endswith(suffix):
+                return path.removeprefix("/internal/v1/agents/leads/").removesuffix(
                     suffix
                 ).strip("/").isdigit()
     # Only the public site contract is anonymous. Nested admin endpoints under

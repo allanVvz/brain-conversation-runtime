@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
@@ -128,4 +128,3 @@ def put_grants(body: GrantsPut, request: Request):
         },
     )
     return updated
-

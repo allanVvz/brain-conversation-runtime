@@ -1,18 +1,17 @@
-﻿"""Authenticated SDR journey and commercial conversion contracts."""
+"""Authenticated SDR journey and commercial conversion contracts."""
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from routes.conversations import _authorize as authorize_internal
-from services import agents_service, auth_service, event_emitter, supabase_client
+from services import agents_service, auth_service, event_emitter, internal_auth, supabase_client
 
 router = APIRouter(prefix="/agents", tags=["agents"])
-internal_router = APIRouter(prefix="/internal/agents", tags=["agents"])
+internal_router = APIRouter(prefix="/internal/v1/agents", tags=["agents"])
 
 
 class PurchaseCompletedBody(BaseModel):
@@ -209,9 +208,27 @@ def journey_state(lead_ref: int, body: JourneyStateBody, request: Request) -> di
 def journey_event_internal(
     lead_ref: int, body: JourneyEventBody,
     x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
 ) -> dict:
-    authorize_internal(x_webhook_token)
-    return record_journey_event(lead_ref, body, None)
+    internal_auth.authorize_webhook_token(x_webhook_token)
+    return record_journey_event(lead_ref, body, x_brain_actor_id)
+
+
+@internal_router.post("/leads/{lead_ref}/journey-state")
+def journey_state_internal(
+    lead_ref: int,
+    body: JourneyStateBody,
+    offering: str = Query("sales", pattern="^(sales|appointment)$"),
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+) -> dict:
+    internal_auth.authorize_webhook_token(x_webhook_token)
+    return set_journey_state(
+        lead_ref,
+        body,
+        x_brain_actor_id,
+        offering=offering,
+    )
 
 
 @router.post("/leads/{lead_ref}/purchase-completed")
@@ -227,7 +244,7 @@ def purchase_completed_internal(
     lead_ref: int, body: PurchaseCompletedBody,
     x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
 ) -> dict:
-    authorize_internal(x_webhook_token)
+    internal_auth.authorize_webhook_token(x_webhook_token)
     return _record_purchase(lead_ref, body, None)
 
 
@@ -250,4 +267,3 @@ def transition_conversion(conversion_id: UUID, body: ConversionStatusBody, reque
         )
     except Exception as exc:
         raise HTTPException(409, "Conversion status could not be changed") from exc
-

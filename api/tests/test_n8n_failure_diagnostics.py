@@ -1,4 +1,4 @@
-﻿from routes import conversations
+from routes import conversations
 
 
 def test_fail_safe_persists_structured_n8n_node_diagnostic(monkeypatch):
@@ -44,4 +44,3 @@ def test_fail_safe_persists_structured_n8n_node_diagnostic(monkeypatch):
     ]
     assert events[0][0]["payload"]["failed_node"] == "DeepSeek agentic reply"
     assert events[0][0]["payload"]["http_code"] == 400
-

@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from services import graph_agent_runtime_v3, graph_proof_checker_v3
+
+
+CORPUS_PATH = Path(__file__).parents[1] / "api" / "evaluation" / "sdr_flow_cases.json"
+CORPUS = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+CASES = {case["id"]: case for case in CORPUS["cases"]}
+
+
+def test_shared_sdr_corpus_has_unique_stable_cases():
+    assert CORPUS["version"] == 1
+    assert len(CASES) == len(CORPUS["cases"])
+    assert {"greeting_after_handoff_oi", "greeting_after_handoff_oii"} <= set(CASES)
+
+
+def test_shared_greetings_are_current_turn_intents_and_not_services():
+    for case_id in ("greeting_after_handoff_oi", "greeting_after_handoff_oii"):
+        message = CASES[case_id]["message"]
+        assert graph_agent_runtime_v3._is_greeting(message)
+        assert graph_agent_runtime_v3._is_social_or_non_service_value(message)
+
+
+def test_shared_mixed_greeting_preserves_the_service_request():
+    case = CASES["greeting_with_service"]
+    assert graph_agent_runtime_v3._is_greeting(case["message"])
+    assert not graph_agent_runtime_v3._is_bare_greeting(case["message"])
+    assert case["expected_service_phrase"] in case["message"].casefold()
+
+
+def test_shared_confirmation_cases_are_unambiguous():
+    assert graph_agent_runtime_v3._is_explicit_confirmation(
+        CASES["explicit_confirmation"]["message"]
+    )
+    assert graph_agent_runtime_v3._is_explicit_rejection(
+        CASES["confirmation_rejected"]["message"]
+    )
+
+
+def test_shared_non_service_values_are_rejected():
+    for case_id in ("social_reply_is_not_service", "number_is_not_service"):
+        assert graph_agent_runtime_v3._is_social_or_non_service_value(
+            CASES[case_id]["message"]
+        )
+
+
+def test_shared_name_cases_survive_casing_and_prove_their_span():
+    """O caso que travou a producao, escrito uma vez para CI e Validator."""
+    case = CASES["name_lowercase_direct_answer"]
+    assert graph_proof_checker_v3.is_human_full_name(case["model_value"])
+    interval = graph_agent_runtime_v3._fact_span_interval(
+        case["message"], case["model_value"],
+    )
+    assert interval is not None
+    assert case["message"][interval[0]:interval[1]] == case["expected_evidence_span"]
+
+
+def test_shared_restated_candidate_is_a_confirmation():
+    case = CASES["name_candidate_restated_confirms"]
+    fact = {"metadata": {"confirmation": {"candidate": case["pending_candidate"]}}}
+    assert graph_agent_runtime_v3._restates_pending_candidate(case["message"], fact)
+
+
+def test_shared_confidence_does_not_turn_any_text_into_a_name():
+    case = CASES["name_with_digits_is_not_a_name"]
+    assert not graph_proof_checker_v3.is_human_full_name(case["model_value"])
+
+
+def test_shared_acknowledgement_only_reply_carries_no_question():
+    case = CASES["acknowledgement_only_is_not_a_turn"]
+    assert "?" not in graph_agent_runtime_v3._statements_only(case["model_reply"])
