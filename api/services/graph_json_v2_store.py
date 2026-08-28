@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -171,57 +170,6 @@ def load_activated_version(
     return None
 
 
-def commit_version(
-    *,
-    persona_slug: str,
-    brand_slug: str | None,
-    expected_version: int,
-    idempotency_key: str,
-    reason: str,
-    graph: "GraphJson",
-    source: str,
-    authored_by: str | None,
-) -> dict[str, Any]:
-    """Atomically allocate and append an immutable version through Postgres."""
-    checksum = checksum_graph(graph)
-    payload = graph.model_dump(mode="json")
-    result = supabase_client.commit_graph_version_v2(
-        persona_slug=persona_slug,
-        brand_slug=brand_slug,
-        expected_version=expected_version,
-        idempotency_key=idempotency_key,
-        reason=reason,
-        graph_json=payload,
-        content_checksum=checksum,
-        source=source,
-        authored_by=authored_by,
-    )
-    if not result or not result.get("graph_version"):
-        raise RuntimeError("commit_graph_version_v2 returned an invalid result")
-    return result
-
-
-def activate_version(
-    *,
-    persona_slug: str,
-    brand_slug: str | None,
-    version: int,
-    checksum: str,
-    operation_id: str,
-    projections: dict[str, Any],
-    source: str,
-) -> dict[str, Any]:
-    return supabase_client.activate_graph_projection_v2(
-        persona_slug=persona_slug,
-        brand_slug=brand_slug,
-        graph_version=version,
-        graph_checksum=checksum,
-        operation_id=operation_id,
-        projections=projections,
-        source=source,
-    )
-
-
 def load_current(
     persona_slug: str,
     brand_slug: str | None = None,
@@ -240,53 +188,6 @@ def load_current(
     if version < 1:
         return None
     return version, graph
-
-
-def save_version(
-    persona_slug: str,
-    version: int,
-    graph: "GraphJson",
-    *,
-    brand_slug: str | None = None,
-    source: str = "graph_json_v2_store",
-    note: str | None = None,
-    published_by: str | None = None,
-    idempotency_key: str | None = None,
-    projections: dict[str, Any] | None = None,
-) -> str:
-    graph_dict = graph.model_dump()
-    checksum = _checksum(graph_dict)
-    persona = supabase_client.get_persona(persona_slug) or {}
-    document_brand = brand_slug if brand_slug is not None else graph.brand_slug
-    doc_id = f"{persona_slug}:{document_brand or 'default'}:v{int(version)}"
-    payload: dict[str, Any] = {
-        "persona_slug": persona_slug,
-        "brand_slug": document_brand,
-        "version": int(version),
-        "checksum": checksum,
-        "graph_json": graph_dict,
-        "source": source,
-        "note": note,
-        "published_by": published_by,
-        "idempotency_key": idempotency_key,
-        "projections": projections or {},
-        "published_at": datetime.now(timezone.utc).isoformat(),
-    }
-    event = supabase_client.insert_event(
-        {
-            "event_type": _EVENT_TYPE,
-            "entity_type": _ENTITY_TYPE,
-            "entity_id": doc_id,
-            "persona_id": persona.get("id"),
-            "payload": payload,
-            "level": "info",
-            "source": source,
-        },
-        source=source,
-    )
-    if not event:
-        raise RuntimeError("Failed to persist Graph JSON v2 in system_events")
-    return checksum
 
 
 def storage_root() -> Path:

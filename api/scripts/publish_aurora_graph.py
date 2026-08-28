@@ -1,7 +1,10 @@
-"""Publish only Aurora's canonical graph fixture; never creates accounts."""
+"""Build the historical Aurora graph fixture for runtime regression tests.
+
+This module has no publication or database operation and is excluded from the
+runtime image. Canonical authoring and publication live in control plane.
+"""
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -10,13 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from schemas.graph_json_v2 import Edge, EdgeLifecycle, GraphJson, PublicationGrant
-from services import (
-    graph_compiler_v3,
-    graph_conversation_contract,
-    graph_document_publisher,
-    graph_json_v21_adapter,
-    graph_json_v2_store,
-)
+from services import graph_conversation_contract, graph_json_v21_adapter
 
 
 FIXTURE = ROOT / "scripts" / "fixtures" / "aurora_graph_v2.json"
@@ -372,42 +369,3 @@ def build_graph() -> GraphJson:
             )
         )
     return graph
-
-
-def publish(*, expected_version: int | None = None) -> dict:
-    graph = build_graph()
-    current = graph_json_v2_store.load_current("aurora", graph.brand_slug)
-    base_version = int(expected_version) if expected_version is not None else (int(current[0]) if current else 0)
-    checksum = graph_json_v2_store.checksum_graph(graph)
-    return graph_document_publisher.commit(
-        graph=graph,
-        persona_slug="aurora",
-        brand_slug=graph.brand_slug,
-        source="aurora_markdown_release",
-        reason="Aurora Graph JSON v2.1 canonical rollout",
-        published_by="production-release",
-        expected_version=base_version,
-        idempotency_key=f"aurora-graph-v21:{checksum}",
-    )
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--expected-version", type=int)
-    parser.add_argument("--skip-v3", action="store_true")
-    args = parser.parse_args()
-    result = publish(expected_version=args.expected_version)
-    v3_result = None
-    if result.get("ok") and not args.skip_v3:
-        v3_result = graph_compiler_v3.compile_persona_publication("aurora", activate=True)
-    print(json.dumps({
-        "ok": result.get("ok"),
-        "version": result.get("version"),
-        "checksum": result.get("checksum"),
-        "idempotent_replay": result.get("idempotent_replay"),
-        "graph_agent_runtime_v3": ({
-            "publication_id": (v3_result or {}).get("publication", {}).get("id"),
-            "version": (v3_result or {}).get("publication", {}).get("version"),
-            "checksum": (v3_result or {}).get("publication", {}).get("checksum"),
-        } if v3_result else None),
-    }))

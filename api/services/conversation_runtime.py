@@ -28,7 +28,7 @@ from services import (
     lead_qualification,
     model_pricing,
     supabase_client,
-    whatsapp_outbox,
+    transport_client,
 )
 from services.model_router import get_router
 from services.deterministic_sdr import (
@@ -2639,14 +2639,14 @@ def commit(
                 "n8n_execution_id": n8n_execution_id,
             }
         if context.runtime_version == graph_agent_runtime_v3.RUNTIME_VERSION:
-            prepared_outbound = whatsapp_outbox.prepare_outbound_envelope(
+            prepared_outbound = transport_client.prepare_outbound(
                 lead=lead, text=response.reply_text, sender_type="agent",
                 message_id=message_id, correlation_id=message_id,
                 idempotency_key=message_id, initial_status="awaiting_proof",
                 metadata=outbound_metadata,
             )
         else:
-            envelope = whatsapp_outbox.enqueue_outbound(
+            envelope = transport_client.enqueue_outbound(
                 lead=lead, text=response.reply_text, sender_type="agent",
                 message_id=message_id, correlation_id=message_id,
                 idempotency_key=message_id, metadata=outbound_metadata,

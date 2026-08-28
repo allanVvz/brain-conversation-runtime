@@ -416,8 +416,6 @@ def reactivation_notice(lead_ref: int, *, reason: str) -> dict:
     `conversation_policy.reactivation`; a persona that publishes none stays
     silent instead of receiving runtime-authored text.
     """
-    from services import whatsapp_outbox
-
     window = _LAST_RESUME_WINDOW.pop(lead_ref, None)
     if _LAST_REQUEUED.pop(lead_ref, 0):
         return {"sent": False, "skipped": "pending_inbound_will_be_answered"}
@@ -462,7 +460,9 @@ def reactivation_notice(lead_ref: int, *, reason: str) -> dict:
     resumed_at = str(lead.get("updated_at") or "")[:19]
     message_id = f"reactivation:{lead_ref}:{resumed_at}"
     try:
-        result = whatsapp_outbox.enqueue_outbound(
+        from services import transport_client
+
+        result = transport_client.enqueue_outbound(
             lead=lead, text=text, sender_type="agent",
             message_id=message_id, correlation_id=message_id,
             idempotency_key=message_id,

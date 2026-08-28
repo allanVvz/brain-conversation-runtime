@@ -9,8 +9,8 @@ API_ROOT = ROOT / "api"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
-from scripts.publish_aurora_graph import build_graph
 from schemas.conversation import ConversationContext, ConversationRoute
+from scripts.publish_aurora_graph import build_graph
 from services import context_cards, conversation_runtime
 from services import graph_conversation_contract as contract_service
 
