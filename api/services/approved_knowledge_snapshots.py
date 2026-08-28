@@ -1146,27 +1146,13 @@ def validate_approved_faq_publications(
         )
         if not node or not node.get("id"):
             if repair:
-                try:
-                    from services import knowledge_lifecycle
-
-                    promoted = knowledge_lifecycle.promote_knowledge_item(item_id, promote_to_kb=False)
-                    evidence = promoted.get("evidence") or {}
-                    node_id = evidence.get("knowledge_node_id")
-                    node = supabase_client.get_knowledge_node(node_id) if node_id else None
-                    if not node:
-                        node = supabase_client.get_knowledge_node_for_source(
-                            "knowledge_items",
-                            item_id,
-                            persona_id=item_persona_id or None,
-                        )
-                except Exception as exc:
-                    failures.append({
-                        "knowledge_item_id": item_id,
-                        "title": item.get("title"),
-                        "reason": "missing_faq_node",
-                        "repair_error": str(exc),
-                    })
-                    continue
+                failures.append({
+                    "knowledge_item_id": item_id,
+                    "title": item.get("title"),
+                    "reason": "missing_faq_node",
+                    "repair_error": "repair_owned_by_control_plane",
+                })
+                continue
             if not node or not node.get("id"):
                 failures.append({
                     "knowledge_item_id": item_id,

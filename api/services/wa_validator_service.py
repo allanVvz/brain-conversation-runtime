@@ -5,8 +5,8 @@ and analyses conversation gaps to feed back into KB Intake.
 """
 
 import asyncio
+import base64
 import difflib
-import hashlib
 import httpx
 import json
 import logging
@@ -32,9 +32,9 @@ from services import (
     graph_compiler_v3,
     graph_json_v2_store,
     graph_proof_checker_v3,
-    media_ingest,
     n8n_client,
     supabase_client,
+    transport_client,
     validator_sofia_insights,
 )
 
@@ -1310,140 +1310,16 @@ def store_validation_media(
     if not re.fullmatch(r"[A-Za-z0-9._:-]{8,160}", idempotency_key or ""):
         raise ValueError("Chave de idempotencia invalida.")
 
-    checksum = hashlib.sha256(content).hexdigest()
-    client = supabase_client.get_client()
-    existing_rows = (
-        client.table("assets")
-        .select("*")
-        .eq("persona_id", persona_id)
-        .eq("lead_id", int(lead_ref))
-        .eq("upload_context", "whatsapp_inbound")
-        .contains("metadata", {"validator_media": {"idempotency_key": idempotency_key}})
-        .limit(1)
-        .execute()
-    ).data or []
-    asset = existing_rows[0] if existing_rows else None
-    if asset:
-        recorded = ((asset.get("metadata") or {}).get("validator_media") or {}).get("sha256")
-        if recorded and recorded != checksum:
-            raise ValueError("A chave de idempotencia ja foi usada por outro arquivo.")
-
-    kind = "image" if mime.startswith("image/") else "document"
-    descriptor = {
-        "kind": kind,
-        "mime": mime,
-        "filename": safe_name,
-        "size": len(content),
-        "reading_status": "completed",
-        "validator_direct": True,
-    }
-    attribution = media_ingest.resolve_campaign_attribution(persona_id, int(lead_ref))
-    if not asset:
-        asset = supabase_client.insert_asset({
-            "persona_id": persona_id,
-            "lead_id": int(lead_ref),
-            "campaign_id": attribution.get("campaign_id"),
-            "campaign_recipient_id": attribution.get("campaign_recipient_id"),
-            "type": "image" if kind == "image" else "pdf",
-            "name": safe_name,
-            "source": "whatsapp",
-            "upload_context": "whatsapp_inbound",
-            "status": "reading",
-            "mime_type": mime,
-            "file_size": len(content),
-            "original_filename": safe_name,
-            "metadata": {
-                "media": descriptor,
-                "direction": "inbound",
-                "reading_status": "completed",
-                "validation_status": "not_applicable",
-                "upload_context": "whatsapp_inbound",
-                "rag_eligible": False,
-                "validator_media": {
-                    "session_id": session_id,
-                    "idempotency_key": idempotency_key,
-                    "sha256": checksum,
-                },
-            },
-        })
-
-    asset_id = str(asset.get("id") or "")
-    if not asset_id:
-        raise RuntimeError("Nao foi possivel registrar o asset de validacao.")
-    extension = ".pdf" if mime == "application/pdf" else {
-        "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
-    }[mime]
-    storage_path = f"{persona_id}/{lead_ref}/{asset_id}-validator{extension}"
-    supabase_client.upload_to_storage(
-        supabase_client.WHATSAPP_MEDIA_BUCKET, storage_path, content, mime,
+    return transport_client.store_validator_media(
+        session_id=session_id,
+        persona_id=persona_id,
+        lead_ref=int(lead_ref),
+        channel_binding_id=session.get("channel_binding_id"),
+        filename=safe_name,
+        mime=mime,
+        content_base64=base64.b64encode(content).decode("ascii"),
+        idempotency_key=idempotency_key,
     )
-    asset = supabase_client.update_asset(asset_id, {
-        "status": "ready",
-        "storage_bucket": supabase_client.WHATSAPP_MEDIA_BUCKET,
-        "storage_path": storage_path,
-        "file_size": len(content),
-    }) or asset
-
-    external_id = f"validator-media:{session_id}:{idempotency_key}"
-    text = f"[imagem de teste recebida: {safe_name}]" if kind == "image" else f"[documento: {safe_name}]"
-    supabase_client.insert_message({
-        "lead_id": int(lead_ref),
-        "role": "user",
-        "content": text,
-        "direction": "inbound",
-        "status": "delivered",
-        "channel": "whatsapp",
-        "sender_id": external_id,
-        "external_message_id": external_id,
-        "channel_binding_id": session.get("channel_binding_id"),
-        "correlation_id": external_id,
-        "metadata": {
-            "asset_id": asset_id,
-            "media": descriptor,
-            "validation": {"is_validation": True, "session_id": session_id},
-        },
-    })
-    message_rows = (
-        client.table("messages")
-        .select("id,external_message_id,direction,created_at")
-        .eq("lead_id", int(lead_ref))
-        .eq("external_message_id", external_id)
-        .limit(1)
-        .execute()
-    ).data or []
-    message = message_rows[0] if message_rows else {}
-    if message.get("id") and not asset.get("message_id"):
-        asset = supabase_client.update_asset(asset_id, {"message_id": message["id"]}) or asset
-
-    graph_attachment: dict[str, Any]
-    try:
-        from services import conversation_graph
-        graph_attachment = conversation_graph.attach_inbound_asset(asset_id)
-    except Exception as exc:
-        logger.warning("validator media graph attach skipped asset=%s: %s", asset_id, exc)
-        graph_attachment = {
-            "attached": False,
-            "status": "error",
-            "reason": type(exc).__name__,
-        }
-
-    return {
-        "session_id": session_id,
-        "lead_ref": int(lead_ref),
-        "asset": {
-            "id": asset_id,
-            "filename": safe_name,
-            "mime_type": mime,
-            "file_size": len(content),
-            "sha256": checksum,
-            "status": "ready",
-            "media_url": f"/assets/{asset_id}/media",
-        },
-        "message": message,
-        "graph_attachment": graph_attachment,
-        "idempotent": bool(existing_rows),
-        "outbound_enqueued": False,
-    }
 
 
 def list_sessions(

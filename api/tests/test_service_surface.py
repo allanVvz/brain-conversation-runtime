@@ -45,6 +45,9 @@ def test_service_identity_and_readiness_surface():
     assert "/internal/v1/runtime/leads/{lead_ref}/pause" in paths
     assert "/internal/v1/runtime/leads/{lead_ref}/resume" in paths
     assert "/internal/v1/runtime/leads/decorate" in paths
+    assert not any(path.startswith("/agent-harness") for path in paths)
+    assert not any(path.startswith("/qa/") for path in paths)
+    assert not any(path.startswith("/sofia/") for path in paths)
     assert "/internal/conversations/context" not in paths
 
 
@@ -74,6 +77,29 @@ def test_runtime_image_excludes_authoring_transport_and_test_tools():
         assert excluded in dockerignore
     for forbidden in ("WhisperModel", "WHISPER_CACHE_PATH", "ffmpeg", "docs/sdr", "/data/vault"):
         assert forbidden not in dockerfile
+
+
+def test_other_domain_modules_are_not_shipped_in_runtime_source():
+    forbidden_files = (
+        "api/routes/agent_harness.py",
+        "api/routes/qa_contract.py",
+        "api/services/agent_harness.py",
+        "api/services/agent_harness_repository.py",
+        "api/services/agent_harness_tools.py",
+        "api/services/campaigns_service.py",
+        "api/services/graph_document_publisher.py",
+        "api/services/graph_json_importer.py",
+        "api/services/knowledge_lifecycle.py",
+        "api/services/knowledge_rag_intake.py",
+        "api/services/sofia_faq_tool.py",
+        "api/services/sofia_orchestrator.py",
+        "api/services/vault_sync.py",
+        "api/services/whatsapp_outbox.py",
+        "api/services/media_ingest.py",
+        "api/services/conversation_graph.py",
+        "api/services/asset_graph_contract.py",
+    )
+    assert [path for path in forbidden_files if (ROOT / path).exists()] == []
 
 
 def test_only_versioned_internal_journey_paths_are_service_authenticated():
@@ -130,7 +156,7 @@ def test_runtime_repository_has_only_the_reachable_domain_surface():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert len(functions) == 211
+    assert len(functions) == 156
     assert functions.isdisjoint({
         "claim_pending_media_assets",
         "claim_whatsapp_buffer",
