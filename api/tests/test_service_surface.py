@@ -22,7 +22,6 @@ FORBIDDEN_PREFIXES = (
     "/webhooks",
     "/messages",
     "/messaging",
-    "/process",
 )
 
 
@@ -31,6 +30,7 @@ def test_service_identity_and_readiness_surface():
     paths = set(main.app.openapi()["paths"])
     assert "/health" in paths
     assert "/health/ready" in paths
+    assert "/process" in paths
 
 
 def test_worker_group_is_domain_scoped():
