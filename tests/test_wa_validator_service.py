@@ -443,6 +443,29 @@ def test_generate_script_rejects_shadow_publication_from_another_persona(monkeyp
         wv.generate_script("aurora", "sdr_qualificacao_carro", "5511999999999", publication_id="foreign")
 
 
+def test_known_name_seed_uses_the_pinned_shadow_publication(monkeypatch):
+    publication = {
+        "id": "pub-shadow", "persona_id": "persona-1", "version": 41,
+        "checksum": "sha256:shadow-v41", "document_json": _appointment_document(),
+    }
+    committed: dict = {}
+    monkeypatch.setattr(wv.supabase_client, "get_graph_publication_by_id", lambda _id: publication)
+    monkeypatch.setattr(
+        wv.supabase_client, "get_active_graph_publication",
+        lambda _id: pytest.fail("shadow seed must not read the active publication"),
+    )
+    monkeypatch.setattr(wv.supabase_client, "get_conversation_ledger", lambda *_args: {"revision": 0, "facts": {}})
+    monkeypatch.setattr(wv.supabase_client, "commit_graph_turn_v3", lambda **kwargs: committed.update(kwargs))
+
+    wv._seed_known_name(
+        persona={"id": "persona-1"}, lead_ref=77, client_name="Cliente QA",
+        publication_id="pub-shadow",
+    )
+
+    assert committed["p_publication_id"] == "pub-shadow"
+    assert committed["p_graph_checksum"] == "sha256:shadow-v41"
+
+
 def _semantic_audit_inputs():
     contract = _appointment_document()["branch_contracts"]["branch:one"]
     turn = {

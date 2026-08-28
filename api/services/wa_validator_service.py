@@ -1789,7 +1789,9 @@ async def _wait_for_turn_audit_v3(
     return audit
 
 
-def _seed_known_name(*, persona: dict, lead_ref: int, client_name: str) -> None:
+def _seed_known_name(
+    *, persona: dict, lead_ref: int, client_name: str, publication_id: str | None = None,
+) -> None:
     """Pre-seed nome_cliente as already-known before any script step runs.
 
     Tests the exact bug class fixed 2026-08-09 (a resolved field being
@@ -1808,7 +1810,14 @@ def _seed_known_name(*, persona: dict, lead_ref: int, client_name: str) -> None:
     persona_id = str(persona.get("id") or "")
     if not persona_id:
         return
-    publication = supabase_client.get_active_graph_publication(persona_id)
+    publication = (
+        supabase_client.get_graph_publication_by_id(publication_id)
+        if publication_id else supabase_client.get_active_graph_publication(persona_id)
+    )
+    if publication_id and (
+        not publication or str(publication.get("persona_id") or "") != persona_id
+    ):
+        raise ValueError("Publicação staged não pertence à persona de validação")
     if not publication:
         return
     document = publication.get("document_json") or {}
@@ -2715,14 +2724,23 @@ async def run_session_direct(
         _seed_known_name(
             persona=persona, lead_ref=int(lead_ref),
             client_name=str(script.get("expected_dialogue", {}).get("known_name") or ""),
+            publication_id=session.get("publication_id"),
         )
     publication: dict = {}
     graph_document: dict = {}
     if semantic_mode:
-        publication = supabase_client.get_active_graph_publication(str(persona.get("id") or "")) or {}
+        staged_publication_id = str(session.get("publication_id") or "")
+        publication = (
+            supabase_client.get_graph_publication_by_id(staged_publication_id)
+            if staged_publication_id else supabase_client.get_active_graph_publication(str(persona.get("id") or ""))
+        ) or {}
         graph_document = publication.get("document_json") or {}
         if not publication or not graph_document:
-            raise ValueError("Driver semântico exige publicação Graph v3 ativa")
+            raise ValueError("Driver semântico exige publicação Graph v3 compilada")
+        if str(publication.get("persona_id") or "") != str(persona.get("id") or ""):
+            raise ValueError("Publicação staged não pertence à persona de validação")
+        if publication.get("status") not in {"compiled", "active"}:
+            raise ValueError("Publicação staged não está compilada")
         expected_version = script.get("meta", {}).get("graph_version")
         expected_checksum = str(script.get("meta", {}).get("graph_checksum") or "")
         if expected_version is not None and int(publication.get("version") or 0) != int(expected_version):
