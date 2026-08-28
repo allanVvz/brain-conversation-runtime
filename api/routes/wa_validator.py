@@ -40,6 +40,7 @@ class GenerateScriptRequest(BaseModel):
     # runs -- tests that the agent never re-asks it), or "random" (picks
     # between the two per generation, so repeated runs cover both).
     initial_state: str | None = None
+    publication_id: str | None = None
 
 
 class RunRequest(BaseModel):
@@ -115,6 +116,7 @@ def generate_script(request: Request, body: GenerateScriptRequest):
             target_contact=body.target_contact,
             model=body.model,
             initial_state=body.initial_state,
+            publication_id=body.publication_id,
         )
     except ValueError as e:
         raise HTTPException(400, str(e))

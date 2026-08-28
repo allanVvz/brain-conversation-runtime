@@ -966,6 +966,7 @@ def generate_script(
     target_contact: str,
     model: str = _MODEL_DEFAULT,
     initial_state: str | None = None,
+    publication_id: str | None = None,
 ) -> dict:
     persona = supabase_client.get_persona(persona_slug)
     if not persona:
@@ -975,6 +976,15 @@ def generate_script(
     persona_name = persona.get("name", persona_slug)
     if not str(target_contact or "").strip():
         raise ValueError("Contato WhatsApp inválido")
+    v3_publication = (
+        supabase_client.get_graph_publication_by_id(publication_id)
+        if publication_id else None
+    )
+    if publication_id:
+        if not v3_publication or str(v3_publication.get("persona_id") or "") != str(persona_id):
+            raise ValueError("Publicação staged não pertence à persona solicitada")
+        if v3_publication.get("status") not in {"compiled", "active"}:
+            raise ValueError("Publicação staged não está compilada")
     kb_ctx, graph_version, graph_checksum, graph = _build_graph_context(
         persona_slug
     )
@@ -990,7 +1000,8 @@ def generate_script(
     # dragging overall_score down over nothing. When an active v3
     # publication exists, it -- not the v2.1 store -- is what a real turn
     # will actually report, so it is the correct "expected" baseline.
-    v3_publication = supabase_client.get_active_graph_publication(persona_id)
+    if not publication_id:
+        v3_publication = supabase_client.get_active_graph_publication(persona_id)
     if v3_publication:
         graph_version = int(v3_publication["version"])
         graph_checksum = str(v3_publication["checksum"])
@@ -1085,6 +1096,7 @@ def generate_script(
             "agent_slug": agent_slug,
             "graph_version": graph_version,
             "graph_checksum": graph_checksum,
+            "publication_id": (v3_publication or {}).get("id"),
             "initial_state": resolved_initial_state,
         },
         "target": target_contact,
@@ -1100,6 +1112,7 @@ def generate_script(
         "id": session_id,
         "persona_slug": persona_slug,
         "flow_id": flow_id,
+        "publication_id": (v3_publication or {}).get("id"),
         "status": "ready",
         "script": script,
         "output": None,
@@ -2900,6 +2913,7 @@ async def run_session_direct(
                             phone_number_id=None,
                             channel_binding_id=channel_binding_id,
                             inbound_buffer_id=event["buffer_id"],
+                            publication_id=session.get("publication_id"),
                         )
                     turn_audit: dict | None = None
                     if pipeline_contract == "conversation_v3":

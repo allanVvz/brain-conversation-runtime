@@ -648,6 +648,7 @@ def build_context(
     message: str,
     message_id: str | None = None,
     trace_id: str | None = None,
+    publication_id: str | None = None,
 ) -> ConversationContext:
     _turn_started_at = time.monotonic()
     lead_binding_probe = supabase_client.get_lead_by_ref(lead_ref) or {}
@@ -696,13 +697,14 @@ def build_context(
                 level="warning",
                 source="conversation_runtime.shadow",
             )
-    if graph_agent_runtime_v3.binding_uses_v3(binding_probe):
+    if graph_agent_runtime_v3.binding_uses_v3(binding_probe) or publication_id:
         try:
             v3_context = graph_agent_runtime_v3.build_context(
                 persona_slug=persona_slug,
                 lead_ref=lead_ref,
                 message=message,
                 message_id=message_id,
+                publication_id=publication_id,
             )
         except RuntimeError as exc:
             raise PublishedGraphUnavailable(str(exc)) from exc
@@ -2900,6 +2902,7 @@ def execute_pipeline(
     phone_number_id: str | None,
     channel_binding_id: str | None = None,
     inbound_buffer_id: str | None = None,
+    publication_id: str | None = None,
 ) -> dict[str, Any]:
     """Run the same context -> classify -> commit contract used by n8n."""
     context = build_context(
@@ -2907,6 +2910,7 @@ def execute_pipeline(
         lead_ref=lead_ref,
         message=message,
         message_id=message_id,
+        publication_id=publication_id,
     )
     decision, response = decide(context)
     result = commit(
