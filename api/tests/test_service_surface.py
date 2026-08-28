@@ -156,13 +156,15 @@ def test_runtime_repository_has_only_the_reachable_domain_surface():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert len(functions) == 156
+    assert len(functions) == 153
     assert functions.isdisjoint({
         "claim_pending_media_assets",
         "claim_whatsapp_buffer",
         "list_public_site_formats",
         "update_persona_config",
         "create_campaign",
+        "activate_graph_projection_v2",
+        "commit_graph_version_v2",
     })
 
 
