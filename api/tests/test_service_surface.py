@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,9 @@ from repositories import runtime as runtime_repository
 from services import supabase_client
 from middleware.auth import is_public_path
 from workers.runner import WORKERS
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 FORBIDDEN_PREFIXES = (
@@ -59,6 +63,15 @@ def test_public_surface_excludes_other_domains():
         if path == prefix or path.startswith(prefix + "/")
     )
     assert offenders == []
+
+
+def test_runtime_image_excludes_authoring_transport_and_test_tools():
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "api/Dockerfile").read_text(encoding="utf-8")
+    for excluded in ("api/scripts/", "api/tests/", "tests/", "docs/"):
+        assert excluded in dockerignore
+    for forbidden in ("WhisperModel", "WHISPER_CACHE_PATH", "ffmpeg", "docs/sdr", "/data/vault"):
+        assert forbidden not in dockerfile
 
 
 def test_only_versioned_internal_journey_paths_are_service_authenticated():
