@@ -13,6 +13,10 @@ ARG GRAPH_RAG_LOCAL_EMBEDDING_MODEL="sentence-transformers/paraphrase-multilingu
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
