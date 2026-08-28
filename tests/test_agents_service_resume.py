@@ -225,18 +225,13 @@ def test_resume_lead_preserves_v3_ledger_and_asked_questions(monkeypatch):
         supabase_client, "get_workflow_binding_by_id",
         lambda binding_id: {"metadata": {"runtime_version": graph_agent_runtime_v3.RUNTIME_VERSION}},
     )
-    reset_calls = []
-    monkeypatch.setattr(
-        supabase_client, "reset_conversation_ledger_branch_v3",
-        lambda *, persona_id, lead_ref: reset_calls.append((persona_id, lead_ref)),
-    )
     monkeypatch.setattr(supabase_client, "update_lead", lambda lead_ref, payload: None)
     monkeypatch.setattr(
         supabase_client, "requeue_waiting_human_whatsapp_buffer", lambda lead_ref: 0
     )
 
     assert agents_service.resume_lead(42) is True
-    assert reset_calls == []
+    assert not hasattr(supabase_client, "reset_conversation_ledger_branch_v3")
 
 
 def test_resume_lead_skips_v3_ledger_reset_for_non_v3_binding(monkeypatch):
@@ -246,18 +241,13 @@ def test_resume_lead_skips_v3_ledger_reset_for_non_v3_binding(monkeypatch):
         supabase_client, "get_workflow_binding_by_id",
         lambda binding_id: {"metadata": {}},
     )
-    reset_calls = []
-    monkeypatch.setattr(
-        supabase_client, "reset_conversation_ledger_branch_v3",
-        lambda *, persona_id, lead_ref: reset_calls.append((persona_id, lead_ref)),
-    )
     monkeypatch.setattr(supabase_client, "update_lead", lambda lead_ref, payload: None)
     monkeypatch.setattr(
         supabase_client, "requeue_waiting_human_whatsapp_buffer", lambda lead_ref: 0
     )
 
     assert agents_service.resume_lead(42) is True
-    assert reset_calls == []
+    assert not hasattr(supabase_client, "reset_conversation_ledger_branch_v3")
 
 
 def test_resume_lead_tolerates_v3_ledger_reset_failure(monkeypatch):

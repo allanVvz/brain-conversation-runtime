@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 import json
 import os
@@ -118,3 +119,21 @@ def test_readiness_uses_image_schema_requirement_and_build_metadata(monkeypatch)
 
 def test_legacy_database_module_is_runtime_repository_alias():
     assert supabase_client is runtime_repository
+
+
+def test_runtime_repository_has_only_the_reachable_domain_surface():
+    source = (ROOT / "api" / "repositories" / "runtime.py").read_text(encoding="utf-8")
+    functions = {
+        node.name
+        for node in ast.parse(source).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert len(functions) == 211
+    assert functions.isdisjoint({
+        "claim_pending_media_assets",
+        "claim_whatsapp_buffer",
+        "list_public_site_formats",
+        "update_persona_config",
+        "create_campaign",
+    })

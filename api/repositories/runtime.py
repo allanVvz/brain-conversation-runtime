@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import base64
 import time
@@ -442,24 +442,6 @@ def get_lead_by_ref(lead_ref: int) -> Optional[dict]:
     """Fetch a lead row by its integer primary key (`leads.id`)."""
     return _one(get_client().table("leads").select("*").eq("id", lead_ref).maybe_single())
 
-
-def get_leads_by_refs(lead_refs: list[int], *, chunk_size: int = 100) -> dict[int, dict]:
-    """Fetch lead snapshots in bounded batches for conversation decoration.
-
-    Keeping each ``in`` list small avoids the oversized PostgREST URLs seen
-    in production while replacing one request per conversation with one or
-    two bounded requests.
-    """
-    refs = sorted({int(value) for value in lead_refs if value is not None})
-    rows: dict[int, dict] = {}
-    for index in range(0, len(refs), max(1, min(chunk_size, 100))):
-        chunk = refs[index:index + max(1, min(chunk_size, 100))]
-        for row in _q(get_client().table("leads").select("*").in_("id", chunk)):
-            if row.get("id") is not None:
-                rows[int(row["id"])] = row
-    return rows
-
-
 def get_audiences(persona_id: Optional[str] = None) -> list[dict]:
     q = get_client().table("audiences").select("*").order("is_system").order("name")
     if persona_id:
@@ -593,98 +575,6 @@ def ensure_system_audiences_for_persona(
         imp = None
     return {"import": imp}
 
-
-def materialize_graph_audiences_for_persona(persona_id: Optional[str]) -> list[dict]:
-    """Reconcile graph audience nodes into the operational `audiences` table.
-
-    Audiences created via Sofia or the Graph tab live as `knowledge_nodes`
-    (node_type='audience'). For them to be usable as Leads filters (and as
-    move/share targets) they must also exist as `audiences` rows. This bridge is
-    idempotent by (persona_id, slug): it only creates rows that do not yet exist
-    and never touches the `import` bucket or archived nodes. Rows it creates are
-    tagged `source_type='graph'` so `sync_audience_node` skips them and we do not
-    spawn a duplicate node back into the tree.
-    """
-    if not persona_id:
-        return []
-    try:
-        nodes = list_knowledge_nodes_by_type(["audience"], persona_id=persona_id, limit=500)
-    except Exception:
-        return []
-    created: list[dict] = []
-    for node in nodes or []:
-        slug = _slugify(node.get("slug") or node.get("title") or "")
-        if not slug or slug == "import":
-            continue
-        meta = node.get("metadata") or {}
-        if str(meta.get("source_type") or "").strip().lower() == "import":
-            continue
-        if str(node.get("status") or "").strip().lower() == "archived":
-            continue
-        if get_audience_by_slug(persona_id, slug):
-            continue
-        try:
-            row = create_audience({
-                "persona_id": persona_id,
-                "slug": slug,
-                "name": node.get("title") or slug,
-                "description": node.get("summary"),
-                "source_type": "graph",
-            })
-        except Exception:
-            row = None
-        if row:
-            created.append(row)
-    return created
-
-
-def list_persona_audiences(persona_id: Optional[str]) -> list[dict]:
-    """Operational audiences for the Leads tab filters.
-
-    Returns the persona's real audiences (reconciled with graph-created ones)
-    minus the internal `import` bucket. This is the single source the Leads UI
-    should consume so that any audience created in the Graph/Sofia automatically
-    becomes a Leads filter, while `import` never shows as a semantic audience.
-    """
-    if not persona_id:
-        return []
-    try:
-        materialize_graph_audiences_for_persona(persona_id)
-    except Exception:
-        pass
-    rows = [row for row in (get_audiences(persona_id=persona_id) or []) if not _is_import_audience(row)]
-    by_slug = {str(row.get("slug") or "").strip().lower(): row for row in rows}
-    # Union with graph audience nodes (read-only) so anything highlighted as an
-    # audience in the Graph becomes a Leads filter even if row materialization
-    # did not persist. Persona-scoped, never the `import` bucket, never archived.
-    try:
-        nodes = list_knowledge_nodes_by_type(["audience"], persona_id=persona_id, limit=500)
-    except Exception:
-        nodes = []
-    for node in nodes or []:
-        slug = _slugify(node.get("slug") or node.get("title") or "")
-        if not slug or slug == "import" or slug in by_slug:
-            continue
-        meta = node.get("metadata") or {}
-        if str(meta.get("source_type") or "").strip().lower() == "import":
-            continue
-        if str(node.get("status") or "").strip().lower() == "archived":
-            continue
-        synthesized = {
-            "id": node.get("id"),
-            "persona_id": persona_id,
-            "slug": slug,
-            "name": node.get("title") or slug,
-            "description": node.get("summary"),
-            "source_type": "graph",
-            "is_system": False,
-            "from_graph_node": True,
-        }
-        by_slug[slug] = synthesized
-        rows.append(synthesized)
-    return rows
-
-
 def get_lead_memberships(lead_id: int) -> list[dict]:
     rows = _q(
         get_client()
@@ -726,32 +616,6 @@ def ensure_lead_membership(
         get_client().table("lead_audience_memberships").upsert(payload, on_conflict="lead_id,audience_id")
     )
     return (result.data or [payload])[0] if result else payload
-
-
-def delete_lead_membership(lead_id: int, audience_id: str) -> None:
-    _execute_with_retry(
-        get_client().table("lead_audience_memberships").delete().eq("lead_id", lead_id).eq("audience_id", audience_id)
-    )
-
-
-def lead_has_membership(lead_id: int, persona_id: str, audience_id: Optional[str] = None) -> bool:
-    rows = _q(
-        get_client()
-        .table("lead_audience_memberships")
-        .select("lead_id,audience_id")
-        .eq("lead_id", lead_id)
-        .limit(500)
-    )
-    if not rows:
-        return False
-    audience_ids = [row.get("audience_id") for row in rows if row.get("audience_id")]
-    if not audience_ids:
-        return False
-    audience_q = get_client().table("audiences").select("id").in_("id", audience_ids).eq("persona_id", persona_id)
-    if audience_id:
-        audience_q = audience_q.eq("id", audience_id)
-    return bool(_q(audience_q.limit(1)))
-
 
 def _audience_ids_for_persona(persona_id: str, audience_id: Optional[str] = None, audience_slug: Optional[str] = None) -> list[str]:
     if audience_id:
@@ -866,79 +730,6 @@ def get_messages(lead_id: str, limit: int = 30) -> list:
 
     return []
 
-
-def get_messages_page(
-    lead_ref: int, *, limit: int = 50,
-    after_created_at: str | None = None, after_id: int | None = None,
-    before_created_at: str | None = None, before_id: int | None = None,
-) -> list:
-    result = get_client().rpc(
-        "messages_page",
-        {
-            "p_lead_id": lead_ref,
-            "p_limit": max(1, min(int(limit), 100)) + 1,
-            "p_after_created_at": after_created_at,
-            "p_after_id": after_id,
-            "p_before_created_at": before_created_at,
-            "p_before_id": before_id,
-        },
-    ).execute()
-    rows = [_normalize_message_row(row) for row in (result.data or [])]
-    return _sort_messages_for_chat(_hydrate_message_media_asset_refs(rows))
-
-
-def _hydrate_message_media_asset_refs(rows: list[dict]) -> list[dict]:
-    """Project persisted inbound assets onto their conversation messages.
-
-    ``assets.message_id`` is the canonical relationship. Mirroring ``asset_id``
-    into message metadata makes the dashboard renderer cheap, but the read path
-    must not depend on that denormalized write succeeding during webhook ingest.
-    """
-    message_ids = [
-        int(row["id"])
-        for row in rows
-        if row.get("id") is not None
-        and isinstance(row.get("metadata"), dict)
-        and (
-            (row.get("metadata") or {}).get("media")
-            or (row.get("metadata") or {}).get("asset_id")
-        )
-    ]
-    if not message_ids:
-        return rows
-    assets = _q(
-        get_client().table("assets")
-        .select("id,message_id,status")
-        .in_("message_id", message_ids)
-        .eq("upload_context", "whatsapp_inbound")
-    )
-    return _project_message_media_asset_refs(rows, assets)
-
-
-def _project_message_media_asset_refs(
-    rows: list[dict], assets: list[dict],
-) -> list[dict]:
-    """Pure projection used by the dashboard read path and regression tests."""
-    by_message_id = {
-        int(asset["message_id"]): asset
-        for asset in assets
-        if asset.get("message_id") is not None and asset.get("id")
-    }
-    hydrated: list[dict] = []
-    for row in rows:
-        asset = by_message_id.get(int(row["id"])) if row.get("id") is not None else None
-        if not asset:
-            hydrated.append(row)
-            continue
-        metadata = {
-            **(row.get("metadata") or {}),
-            "asset_id": str(asset["id"]),
-            "media_asset_status": asset.get("status"),
-        }
-        hydrated.append({**row, "metadata": metadata})
-    return hydrated
-
-
 def _sort_messages_for_chat(rows: list) -> list:
     """Return chat messages in human-readable order.
 
@@ -1036,71 +827,6 @@ def get_recent_messages(hours: int = 24, limit: int = 500, persona_id: Optional[
             return []
         q = q.in_("lead_id", lead_refs)
     return [_normalize_message_row(row) for row in _q(q)]
-
-
-def get_conversations(hours: int = 168, limit: int = 1000, persona_id: Optional[str] = None, lead_refs: Optional[list[int]] = None) -> list:
-    """
-    Returns the last message per unique conversation.
-
-    ``messages.lead_id`` is the canonical key.  The response retains
-    ``lead_ref`` for dashboard compatibility.
-    """
-    from datetime import datetime, timedelta
-    since = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
-    client = get_client()
-    requested_lead_refs = list(lead_refs) if lead_refs is not None else None
-    if lead_refs is None and persona_id:
-        scoped_leads = _q(client.table("leads").select("id").eq("persona_id", persona_id))
-        lead_refs = [lead.get("id") for lead in scoped_leads if lead.get("id") is not None]
-        if not lead_refs:
-            return []
-
-    messages_q = (
-        client.table("messages")
-        .select("id,lead_id,role,content,created_at,direction,status,channel,sender_id")
-        .gte("created_at", since)
-        .order("created_at", desc=True)
-        .limit(limit)
-    )
-    if lead_refs is not None:
-        if not lead_refs:
-            return []
-        messages_q = messages_q.in_("lead_id", lead_refs)
-    rows = [_normalize_message_row(row) for row in _q(messages_q)]
-    lead_refs = sorted({row.get("lead_ref") for row in rows if row.get("lead_ref") is not None})
-    leads_by_ref: dict = {}
-    for idx in range(0, len(lead_refs), 200):
-        chunk = lead_refs[idx:idx + 200]
-        for lead in _q(
-            client.table("leads")
-            .select("id,lead_id,nome,persona_id,stage,interesse_produto")
-            .in_("id", chunk)
-        ):
-            leads_by_ref[lead.get("id")] = lead
-
-    seen: dict = {}
-    for row in rows:
-        lead_ref = row.get("lead_ref")
-        lead = leads_by_ref.get(lead_ref) or {}
-        if persona_id and lead.get("persona_id") != persona_id and requested_lead_refs is None:
-            continue
-        key = f"lead:{lead_ref}" if lead_ref is not None else f"message:{row.get('id') or 'unknown'}"
-        if key not in seen:
-            seen[key] = {
-                "key": key,
-                "nome": lead.get("nome") or key,
-                "lead_id": lead.get("lead_id"),
-                "lead_ref": lead_ref,
-                "persona_id": lead.get("persona_id"),
-                "interesse_produto": lead.get("interesse_produto"),
-                "Lead_Stage": lead.get("stage") or "novo",
-                "last_message": row.get("texto") or row.get("content") or "",
-                "last_direction": row.get("direction") or "",
-                "last_sender_type": row.get("sender_type") or "",
-                "last_at": row.get("created_at") or "",
-            }
-    return list(seen.values())
-
 
 def insert_message(data: dict) -> None:
     client = get_client()
@@ -1713,29 +1439,6 @@ def upsert_knowledge_edge(
             return None
         raise
 
-
-def update_knowledge_edge(edge_id: str, data: dict) -> Optional[dict]:
-    """Replace selected fields on one edge by UUID without metadata merging."""
-    global _KG_TABLES_MISSING
-    if _KG_TABLES_MISSING or not edge_id or not data:
-        return None
-    try:
-        payload = dict(data)
-        result = (
-            get_client()
-            .table("knowledge_edges")
-            .update(payload)
-            .eq("id", edge_id)
-            .execute()
-        )
-        return (result.data or [{"id": edge_id, **payload}])[0]
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-            return None
-        raise
-
-
 def deactivate_primary_paths_for_target(target_node_id: str, except_source_node_id: Optional[str] = None) -> int:
     """Soft-disable active primary-tree paths to a target node."""
     if _KG_TABLES_MISSING or not target_node_id:
@@ -1820,13 +1523,6 @@ def hard_delete_knowledge_edge(edge_id: str) -> bool:
             return False
         raise
 
-
-def get_knowledge_edge(edge_id: str) -> Optional[dict]:
-    if not edge_id:
-        return None
-    return _one(get_client().table("knowledge_edges").select("*").eq("id", edge_id).maybe_single())
-
-
 def get_knowledge_node_for_source(
     source_table: str,
     source_id: str,
@@ -1882,37 +1578,6 @@ def get_knowledge_node_by_slug(
             _KG_TABLES_MISSING = True
             return None
         raise
-
-
-def get_knowledge_edge_between(
-    source_node_id: str,
-    target_node_id: str,
-    *,
-    relation_type: Optional[str] = None,
-) -> Optional[dict]:
-    global _KG_TABLES_MISSING
-    if _KG_TABLES_MISSING or not source_node_id or not target_node_id:
-        return None
-    try:
-        q = (
-            get_client().table("knowledge_edges")
-            .select("*")
-            .eq("source_node_id", source_node_id)
-            .eq("target_node_id", target_node_id)
-        )
-        if relation_type:
-            q = q.eq("relation_type", relation_type)
-        rows = _q(q.limit(5))
-        for row in rows:
-            if not _edge_is_inactive(row):
-                return row
-        return rows[0] if rows else None
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-            return None
-        raise
-
 
 def delete_knowledge_node(node_id: str) -> bool:
     """Delete a knowledge node and its graph edges by id."""
@@ -2042,72 +1707,6 @@ def list_knowledge_nodes_by_type(
             _KG_TABLES_MISSING = True
         return []
 
-
-def list_product_collection_nodes(
-    *,
-    persona_id: Optional[str] = None,
-    node_type: str = "product_collection",
-    limit: int = 500,
-) -> list[dict]:
-    global _KG_TABLES_MISSING
-    if _KG_TABLES_MISSING:
-        return []
-    try:
-        q = (
-            get_client()
-            .table("knowledge_nodes")
-            .select("*")
-            .eq("node_type", node_type)
-            .neq("status", "archived")
-            .order("title")
-            .limit(limit)
-        )
-        if persona_id:
-            q = q.eq("persona_id", persona_id)
-        return _q(q.order("updated_at", desc=True).range(offset, offset + limit - 1))
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-        return []
-
-
-def list_product_nodes(
-    *,
-    persona_id: Optional[str] = None,
-    collection_slug: Optional[str] = None,
-    category_slug: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: int = 500,
-) -> list[dict]:
-    global _KG_TABLES_MISSING
-    if _KG_TABLES_MISSING:
-        return []
-    try:
-        q = (
-            get_client()
-            .table("knowledge_nodes")
-            .select("*")
-            .eq("node_type", "product")
-            .neq("status", "archived")
-            .order("title")
-            .limit(limit)
-        )
-        if persona_id:
-            q = q.eq("persona_id", persona_id)
-        if status:
-            q = q.eq("status", status)
-        rows = _q(q)
-        if collection_slug:
-            rows = [r for r in rows if (r.get("metadata") or {}).get("collection_slug") == collection_slug]
-        if category_slug:
-            rows = [r for r in rows if (r.get("metadata") or {}).get("category_slug") == category_slug]
-        return rows
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-        return []
-
-
 def list_edges_for_nodes(node_ids: list[str], *, relation_types: Optional[list[str]] = None, limit: int = 5000) -> list[dict]:
     global _KG_TABLES_MISSING
     ids = sorted({str(node_id) for node_id in (node_ids or []) if node_id})
@@ -2146,27 +1745,6 @@ def list_edges_for_nodes(node_ids: list[str], *, relation_types: Optional[list[s
             _KG_TABLES_MISSING = True
         return []
 
-
-def list_knowledge_nodes_by_ids(node_ids: list[str]) -> list[dict]:
-    global _KG_TABLES_MISSING
-    ids = list({node_id for node_id in (node_ids or []) if node_id})
-    if _KG_TABLES_MISSING or not ids:
-        return []
-    try:
-        rows: list[dict] = []
-        for index in range(0, len(ids), 75):
-            chunk = ids[index:index + 75]
-            rows.extend(_q(
-                get_client().table("knowledge_nodes").select("*")
-                .in_("id", chunk).limit(len(chunk))
-            ))
-        return rows
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-        return []
-
-
 def list_all_knowledge_graph(persona_id: Optional[str] = None, limit_nodes: int = 1500) -> tuple[list[dict], list[dict]]:
     """Return all nodes + edges (optionally scoped to persona). Used by /knowledge/graph-data."""
     global _KG_TABLES_MISSING
@@ -2191,249 +1769,6 @@ def list_all_knowledge_graph(persona_id: Optional[str] = None, limit_nodes: int 
         eq_in_source = []
     active_edges = [edge for edge in eq_in_source if not _edge_is_inactive(edge)]
     return nodes, active_edges
-
-
-def _asset_table_unavailable(exc: Exception) -> bool:
-    text = str(exc)
-    return "assets" in text and ("PGRST205" in text or "schema cache" in text or "Could not find" in text)
-
-
-def sync_gallery_asset_node(node: dict, edge: dict) -> Optional[dict]:
-    """Mirror a Gallery-linked knowledge node into the existing assets table."""
-    if not node or not edge:
-        return None
-    client = get_client()
-    metadata = node.get("metadata") or {}
-    node_type = (node.get("node_type") or "").lower()
-    file_path = metadata.get("file_path") or metadata.get("path") or metadata.get("url")
-    ext = str(file_path).rsplit(".", 1)[-1].lower() if file_path and "." in str(file_path) else ""
-    asset_type = metadata.get("asset_type") or ("gallery_node" if node_type != "asset" else "asset")
-    platform_type = "image" if ext in {"png", "jpg", "jpeg", "svg", "gif", "webp"} else ("campaign" if node_type == "campaign" else "template")
-    payload = {
-        "persona_id": node.get("persona_id") or edge.get("persona_id"),
-        "type": platform_type,
-        "name": node.get("title") or node.get("slug") or "Gallery asset",
-        "url": metadata.get("url") if metadata.get("url") else None,
-        "metadata": {
-            **metadata,
-            "knowledge_node_id": node.get("id"),
-            "knowledge_edge_id": edge.get("id"),
-            "source_table": node.get("source_table"),
-            "source_id": node.get("source_id"),
-            "node_type": node_type,
-            "file_path": file_path,
-            "gallery_active": True,
-        },
-        "source": "imported",
-        "asset_type": asset_type,
-        "asset_function": metadata.get("asset_function") or "gallery_reference",
-        "tags": node.get("tags") or [],
-        "description": node.get("summary"),
-        "embedding_status": "none",
-        "approval_status": "approved",
-        "knowledge_node_id": node.get("id"),
-        "gallery_edge_id": edge.get("id"),
-    }
-    payload = {k: v for k, v in payload.items() if v is not None}
-    try:
-        existing = _one(client.table("assets").select("id").eq("knowledge_node_id", node.get("id")).maybe_single())
-        if existing:
-            result = _execute_with_retry(client.table("assets").update(payload).eq("id", existing["id"]))
-        else:
-            result = _execute_with_retry(client.table("assets").insert(payload))
-        return (result.data or [payload])[0]
-    except Exception as exc:
-        if _asset_table_unavailable(exc):
-            return None
-        try:
-            from services import sre_logger
-            sre_logger.error("supabase_client", f"sync_gallery_asset_node failed: {exc}", exc)
-        except Exception:
-            pass
-        return None
-
-
-def _faq_publication_payload(node: dict, item: Optional[dict], edge: Optional[dict] = None) -> dict:
-    metadata = node.get("metadata") or {}
-    question = (
-        metadata.get("question")
-        or (item or {}).get("title")
-        or node.get("title")
-        or node.get("slug")
-        or "FAQ"
-    )
-    answer = (
-        metadata.get("answer")
-        or (item or {}).get("content")
-        or node.get("summary")
-        or metadata.get("content")
-        or metadata.get("description")
-        or question
-    )
-    file_path = normalize_file_path(
-        (item or {}).get("file_path")
-        or metadata.get("file_path")
-        or metadata.get("path")
-        or metadata.get("url")
-    )
-    path_slugs = []
-    for value in (
-        (item or {}).get("metadata", {}).get("path_slugs"),
-        metadata.get("path_slugs"),
-    ):
-        if isinstance(value, list) and value:
-            path_slugs = [str(v) for v in value if v]
-            break
-    return {
-        "question": question,
-        "answer": answer,
-        "title": question,
-        "content": answer,
-        "file_path": file_path,
-        "path_slugs": path_slugs,
-        "tags": (item or {}).get("tags") or node.get("tags") or [],
-        "persona_id": (edge or {}).get("persona_id") or node.get("persona_id") or (item or {}).get("persona_id"),
-    }
-
-
-def sync_embedded_kb_node(node: dict, edge: dict) -> Optional[dict]:
-    """Publish an Embedded-linked FAQ into the Golden Dataset + RAG tables."""
-    if not node or not edge:
-        return None
-    from datetime import datetime, timezone
-    import hashlib
-
-    persona_id = edge.get("persona_id") or node.get("persona_id")
-    if not persona_id:
-        return None
-    metadata = node.get("metadata") or {}
-    source_table = node.get("source_table")
-    source_id = node.get("source_id")
-
-    item = None
-    if source_table == "knowledge_items" and source_id:
-        try:
-            item = get_knowledge_item(source_id)
-        except Exception:
-            item = None
-
-    node_type = (node.get("node_type") or (item or {}).get("content_type") or "other").lower()
-    if node_type != "faq":
-        raise ValueError("Only approved FAQ nodes can be published to the Golden Dataset")
-    if item and str(item.get("status") or "").lower() not in {"approved", "embedded"}:
-        raise ValueError("Approve the FAQ before publishing it to the Golden Dataset")
-    faq_payload = _faq_publication_payload(node, item, edge)
-    title = faq_payload["title"]
-    content = faq_payload["content"]
-    question = faq_payload["question"]
-    answer = faq_payload["answer"]
-    file_path = faq_payload["file_path"]
-    path_slugs = faq_payload["path_slugs"]
-    tags = faq_payload["tags"]
-    kb_id = "gn_" + hashlib.md5(f"{node.get('id')}:{persona_id}".encode()).hexdigest()[:12]
-
-    if item:
-        update_knowledge_item(source_id, {
-            "status": "embedded",
-            "approved_at": datetime.now(timezone.utc).isoformat(),
-            "persona_id": persona_id,
-        })
-
-    entry = upsert_kb_entry({
-        "kb_id": kb_id,
-        "persona_id": persona_id,
-        "tipo": "faq",
-        "categoria": node_type,
-        "titulo": title,
-        "conteudo": content,
-        "link": file_path,
-        "status": "ATIVO",
-        "source": "graph_embed",
-        "agent_visibility": (item or {}).get("agent_visibility") or ["SDR", "Closer", "Classifier"],
-        "tags": tags,
-        "embedding_status": "created",
-    })
-    rag_entry = None
-    rag_chunks: list[dict] = []
-    if entry:
-        from services import knowledge_rag_intake as _rag_intake
-        if _rag_intake.is_rag_eligible(node_type):
-            rag_entry = upsert_knowledge_rag_entry({
-                "persona_id": persona_id,
-                "artifact_id": metadata.get("artifact_id"),
-                "content_type": "faq",
-                "semantic_level": int(node.get("level") or 50),
-                "title": title,
-                "question": question,
-                "answer": answer,
-                "content": content,
-                "summary": node.get("summary") or content[:280],
-                "canonical_key": f"kb:{persona_id}:{kb_id}",
-                "slug": _slugify(title),
-                "status": "active",
-                "tags": tags,
-                "products": [title] if node_type == "product" else [],
-                "campaigns": [title] if node_type == "campaign" else [],
-                "metadata": {
-                    **metadata,
-                    "kb_entry_id": entry.get("id"),
-                    "knowledge_node_id": node.get("id"),
-                    "graph_edge_id": edge.get("id"),
-                    "node_type": node_type,
-                    "original_node_type": node_type,
-                    "file_path": file_path,
-                    "path": file_path,
-                    "path_slugs": path_slugs,
-                    "question": question,
-                    "answer": answer,
-                    "persona_id": persona_id,
-                    "source_knowledge_item_id": source_id,
-                },
-                "confidence": float(node.get("confidence") or 0.8),
-                "importance": float(node.get("importance") or 0.7),
-            })
-            if rag_entry and rag_entry.get("id"):
-                rag_chunks = replace_knowledge_rag_chunks(
-                    rag_entry["id"],
-                    persona_id,
-                    [{
-                        "chunk_text": content,
-                        "chunk_summary": (node.get("summary") or title)[:280],
-                        "metadata": {
-                            "source": "graph_embed",
-                            "file_path": file_path,
-                            "path": file_path,
-                            "path_slugs": path_slugs,
-                            "question": question,
-                            "answer": answer,
-                            "persona_id": persona_id,
-                            "knowledge_item_id": source_id,
-                            "knowledge_node_id": node.get("id"),
-                        },
-                    }],
-                )
-        if item:
-            next_meta = {
-                **((get_knowledge_item(source_id) or item).get("metadata") or {}),
-                "kb_entry_id": entry.get("id"),
-                "knowledge_rag_entry_id": (rag_entry or {}).get("id"),
-                "embedded_edge_id": edge.get("id"),
-                "golden_dataset_file_path": file_path,
-                "golden_dataset_question": question,
-                "golden_dataset_answer": answer,
-            }
-            update_knowledge_item(source_id, {
-                "status": "embedded",
-                "metadata": next_meta,
-            })
-    return {
-        "item": get_knowledge_item(source_id) if source_id and source_table == "knowledge_items" else item,
-        "kb_entry": entry,
-        "rag_entry": rag_entry,
-        "chunks": rag_chunks,
-        "embedded_edge": edge,
-    }
-
 
 def reset_embedded_legacy_publications(persona_id: Optional[str] = None) -> dict:
     """Deactivate Embedded links and remove Golden Dataset/RAG mirrors."""
@@ -2520,180 +1855,6 @@ def mark_gallery_asset_inactive_by_edge(edge_id: str) -> None:
     except Exception:
         return
 
-
-
-def _storage_signed_url(bucket: str | None, path: str | None, expires_in: int = 86400) -> Optional[str]:
-    if not bucket or not path:
-        return None
-    try:
-        signed = get_client().storage.from_(bucket).create_signed_url(path, expires_in)
-        signed_url = signed.get("signedURL") if isinstance(signed, dict) else getattr(signed, "signed_url", None) or getattr(signed, "signedURL", None)
-        if not signed_url:
-            return None
-        internal_base = (os.environ.get("SUPABASE_URL") or "").rstrip("/")
-        public_base = (os.environ.get("SUPABASE_PUBLIC_URL") or internal_base).rstrip("/")
-        if signed_url.startswith("http"):
-            if internal_base and signed_url.startswith(internal_base):
-                return f"{public_base}{signed_url[len(internal_base):]}"
-            return signed_url
-        base = public_base
-        if signed_url.startswith("/object"):
-            return f"{base}/storage/v1{signed_url}"
-        return f"{base}{signed_url}"
-    except Exception:
-        return None
-
-
-def _asset_display_url(asset_row: dict) -> str:
-    signed = _storage_signed_url(asset_row.get("storage_bucket"), asset_row.get("storage_path"))
-    return signed or asset_row.get("url") or ""
-
-
-def asset_display_url(asset_row: dict) -> str:
-    """Return the renderable URL for an asset row.
-
-    Storage location is the source of truth. The persisted `url` column is kept
-    only as a legacy fallback because signed URLs expire and public URLs do not
-    work for private buckets.
-    """
-    return _asset_display_url(asset_row)
-
-
-def list_gallery_assets(persona_id: Optional[str] = None, limit: int = 250) -> list[dict]:
-    """Return knowledge nodes connected to the protected Gallery node."""
-    global _KG_TABLES_MISSING
-    if _KG_TABLES_MISSING:
-        return []
-    client = get_client()
-    try:
-        gallery_q = client.table("knowledge_nodes").select("id").eq("node_type", "gallery").eq("status", "active")
-        if persona_id:
-            gallery_q = gallery_q.eq("persona_id", persona_id)
-        galleries = gallery_q.limit(100).execute().data or []
-        gallery_ids = [row["id"] for row in galleries if row.get("id")]
-        if not gallery_ids:
-            return []
-        source_edges = (
-            client.table("knowledge_edges")
-            .select("*")
-            .eq("relation_type", "gallery_asset")
-            .in_("source_node_id", gallery_ids)
-            .limit(limit)
-            .execute().data or []
-        )
-        target_edges = (
-            client.table("knowledge_edges")
-            .select("*")
-            .eq("relation_type", "gallery_asset")
-            .in_("target_node_id", gallery_ids)
-            .limit(limit)
-            .execute().data or []
-        )
-        edges = source_edges + target_edges
-        edges = [edge for edge in edges if not _edge_is_inactive(edge)]
-        content_ids = [
-            edge.get("target_node_id") if edge.get("source_node_id") in gallery_ids else edge.get("source_node_id")
-            for edge in edges
-        ]
-        content_ids = [node_id for node_id in content_ids if node_id]
-        if not content_ids:
-            return []
-        nodes = (
-            client.table("knowledge_nodes")
-            .select("*")
-            .in_("id", content_ids)
-            .neq("status", "archived")
-            .limit(limit)
-            .execute().data or []
-        )
-    except Exception as exc:
-        if _kg_unavailable(exc):
-            _KG_TABLES_MISSING = True
-        return []
-    edge_by_content = {
-        (edge.get("target_node_id") if edge.get("source_node_id") in gallery_ids else edge.get("source_node_id")): edge
-        for edge in edges
-    }
-
-    # Resolve each gallery node to its underlying public.assets row so the
-    # /assets page receives real asset UUIDs (not gn:<node_id>) and the
-    # actual image URL â€” old gallery nodes used to store an .md companion
-    # in metadata.file_path, which made cards render `.md` placeholders
-    # and crashed /assets/{id} with `invalid uuid`.
-    asset_ids: list[str] = []
-    for node in nodes:
-        if node.get("source_table") == "assets" and node.get("source_id"):
-            asset_ids.append(str(node["source_id"]))
-        else:
-            meta_aid = (node.get("metadata") or {}).get("asset_id")
-            if meta_aid:
-                asset_ids.append(str(meta_aid))
-    assets_by_id: dict[str, dict] = {}
-    if asset_ids:
-        try:
-            asset_rows = (
-                client.table("assets")
-                .select("*")
-                .in_("id", list({aid for aid in asset_ids if aid}))
-                .execute().data or []
-            )
-            assets_by_id = {row["id"]: row for row in asset_rows if row.get("id")}
-        except Exception:
-            assets_by_id = {}
-
-    out = []
-    for node in nodes:
-        metadata = node.get("metadata") or {}
-        asset_id = None
-        if node.get("source_table") == "assets" and node.get("source_id"):
-            asset_id = str(node["source_id"])
-        elif metadata.get("asset_id"):
-            asset_id = str(metadata["asset_id"])
-        asset_row = assets_by_id.get(asset_id) if asset_id else None
-
-        # Orphan gallery node (no public.assets row backing it) â€” skip from
-        # the assets list. It is not a visual asset, just a stray markdown
-        # reference from a legacy flow.
-        if not asset_row:
-            continue
-        # Markdown companions are inline content of the parent image; never
-        # surface them as standalone cards.
-        if (asset_row.get("type") or "").lower() == "markdown":
-            continue
-
-        asset_meta = asset_row.get("metadata") or {}
-        effective_status = asset_meta.get("validation_status") or asset_row.get("status") or node.get("status") or "ready"
-        original = asset_row.get("original_filename") or asset_meta.get("original_filename") or asset_row.get("name") or ""
-        ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
-        if not ext:
-            mime = asset_row.get("mime_type") or ""
-            ext = mime.split("/")[-1].lower() if "/" in mime else ""
-        storage_path = (
-            f"{asset_row.get('storage_bucket')}:{asset_row.get('storage_path')}"
-            if asset_row.get("storage_bucket") and asset_row.get("storage_path")
-            else asset_meta.get("storage_path") or asset_row.get("url")
-        )
-        out.append({
-            "id": asset_row["id"],
-            "title": asset_row.get("name") or original or node.get("title") or "Gallery asset",
-            "status": effective_status,
-            "content_type": "asset",
-            "asset_type": asset_row.get("type") or asset_meta.get("kind") or metadata.get("asset_type"),
-            "asset_function": asset_meta.get("asset_function") or metadata.get("asset_function") or "gallery_reference",
-            "file_type": ext or None,
-            "file_path": storage_path,
-            "url": _asset_display_url(asset_row),
-            "persona_id": asset_row.get("persona_id") or node.get("persona_id"),
-            "created_at": asset_row.get("created_at") or node.get("created_at"),
-            "source": "gallery",
-            "summary": node.get("summary"),
-            "tags": node.get("tags") or [],
-            "knowledge_node_id": node.get("id"),
-            "gallery_edge_id": (edge_by_content.get(node.get("id")) or {}).get("id"),
-        })
-    return out
-
-
 # â”€â”€ Registries (migration 009) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Cached in-memory with short TTL â€” config rarely changes and the graph
 # endpoint reads them on every request.
@@ -2747,59 +1908,6 @@ _RELATION_TYPE_REGISTRY_FALLBACK: list[dict] = [
     {"relation_type": "mentions",           "label": "menciona",           "inverse_label": "mencionado por", "default_weight": 0.30, "directional": True,  "sort_order": 210},
     {"relation_type": "visible_to_agent",   "label": "visÃ­vel para agente", "inverse_label": "vÃª",            "default_weight": 0.50, "directional": True,  "sort_order": 220},
 ]
-
-
-def get_node_type_registry() -> list[dict]:
-    """Return the knowledge_node_type_registry rows (migration 009).
-
-    Caches the result for _REGISTRY_TTL_SECONDS to avoid querying on every
-    request. Falls back to a hardcoded mirror of the seed inserts when the
-    table is missing or empty so the graph endpoint stays useful.
-    """
-    global _NODE_TYPE_REGISTRY_CACHE
-    now = time.monotonic()
-    if _NODE_TYPE_REGISTRY_CACHE and (now - _NODE_TYPE_REGISTRY_CACHE[0]) < _REGISTRY_TTL_SECONDS:
-        return _NODE_TYPE_REGISTRY_CACHE[1]
-    rows: list[dict] = []
-    try:
-        rows = (
-            get_client().table("knowledge_node_type_registry")
-            .select("node_type,label,default_level,default_importance,color,icon,sort_order,active")
-            .execute().data or []
-        )
-        rows = [r for r in rows if r.get("active", True)]
-    except Exception:
-        rows = []
-    if not rows:
-        rows = _NODE_TYPE_REGISTRY_FALLBACK
-    _NODE_TYPE_REGISTRY_CACHE = (now, rows)
-    return rows
-
-
-def get_relation_type_registry() -> list[dict]:
-    """Return the knowledge_relation_type_registry rows (migration 009).
-
-    Same cache + fallback strategy as get_node_type_registry.
-    """
-    global _RELATION_TYPE_REGISTRY_CACHE
-    now = time.monotonic()
-    if _RELATION_TYPE_REGISTRY_CACHE and (now - _RELATION_TYPE_REGISTRY_CACHE[0]) < _REGISTRY_TTL_SECONDS:
-        return _RELATION_TYPE_REGISTRY_CACHE[1]
-    rows: list[dict] = []
-    try:
-        rows = (
-            get_client().table("knowledge_relation_type_registry")
-            .select("relation_type,label,inverse_label,default_weight,directional,sort_order,active")
-            .execute().data or []
-        )
-        rows = [r for r in rows if r.get("active", True)]
-    except Exception:
-        rows = []
-    if not rows:
-        rows = _RELATION_TYPE_REGISTRY_FALLBACK
-    _RELATION_TYPE_REGISTRY_CACHE = (now, rows)
-    return rows
-
 
 # â”€â”€ Insights â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -3031,36 +2139,6 @@ def get_persona_configs_by_ids(
                 configs[str(row["id"])] = dict(row.get("config") or {})
     return configs
 
-
-def upsert_persona(data: dict) -> None:
-    get_client().table("personas").upsert(data, on_conflict="slug").execute()
-
-
-def list_public_site_formats(enabled_only: bool = True) -> list:
-    q = get_client().table("public_site_formats").select("*").order("sort_order").order("label")
-    if enabled_only:
-        q = q.eq("enabled", True)
-    rows = _q(q)
-    return rows or [dict(row) for row in DEFAULT_FORMATS if row.get("enabled") or not enabled_only]
-
-
-def get_public_site_format(key: str) -> Optional[dict]:
-    if not key:
-        return None
-    row = _one(get_client().table("public_site_formats").select("*").eq("key", key).eq("enabled", True).maybe_single())
-    if row:
-        return row
-    return next((dict(fmt) for fmt in DEFAULT_FORMATS if fmt.get("key") == key and fmt.get("enabled")), None)
-
-
-def update_persona_config(slug: str, config: dict, *, catalog_url: Any = _UNSET) -> Optional[dict]:
-    payload: dict[str, Any] = {"config": config or {}}
-    if catalog_url is not _UNSET:
-        payload["catalog_url"] = catalog_url
-    _execute_with_retry(get_client().table("personas").update(payload).eq("slug", slug))
-    return get_persona(slug)
-
-
 _PERSONA_ROUTING_FIELDS = (
     "process_mode",
     "outbound_webhook_url",
@@ -3097,26 +2175,6 @@ def get_persona_routing(slug: str) -> Optional[dict]:
         "routing_source": "persona_columns" if migration_applied else ("legacy_workflow_binding" if has_legacy_n8n else "default"),
     }
 
-
-def update_persona_routing(slug: str, data: dict) -> Optional[dict]:
-    """Partial update of persona routing fields. Ignores unknown keys."""
-    payload = {k: v for k, v in (data or {}).items() if k in _PERSONA_ROUTING_FIELDS}
-    if not payload:
-        return get_persona_routing(slug)
-    try:
-        _execute_with_retry(
-            get_client().table("personas").update(payload).eq("slug", slug)
-        )
-    except Exception as exc:
-        try:
-            from services import sre_logger
-            sre_logger.error("supabase_client", f"update_persona_routing failed: {exc}", exc)
-        except Exception:
-            pass
-        raise
-    return get_persona_routing(slug)
-
-
 # â”€â”€ Knowledge Base â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def get_kb_entries(persona_id: Optional[str] = None, status: str = "ATIVO") -> list:
@@ -3126,18 +2184,6 @@ def get_kb_entries(persona_id: Optional[str] = None, status: str = "ATIVO") -> l
     if status:
         q = q.eq("status", status)
     return _q(q.order("prioridade"))
-
-
-def get_kb_entries_for_persona_ids(persona_ids: list[str], status: str = "ATIVO") -> list:
-    ids = [pid for pid in persona_ids if pid]
-    if not ids:
-        return []
-    q = get_client().table("kb_entries").select("id,persona_id,tipo,categoria,produto,intencao,titulo,conteudo,link,prioridade,status,source,tags,agent_visibility,updated_at")
-    q = q.in_("persona_id", ids)
-    if status:
-        q = q.eq("status", status)
-    return _q(q.order("prioridade"))
-
 
 def _kb_entry_select():
     return (
@@ -3265,31 +2311,9 @@ def get_kb_entries_by_ids(ids: list) -> dict:
         ))
     return {str(r["id"]): r for r in rows if r.get("id")}
 
-
-def update_kb_entry(entry_id: str, data: dict) -> None:
-    from datetime import datetime, timezone
-    payload = dict(data or {})
-    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-    try:
-        _execute_with_retry(get_client().table("kb_entries").update(payload).eq("id", entry_id))
-    except Exception as exc:
-        payload, dropped_column = _drop_missing_kb_entry_column(payload, exc)
-        if not dropped_column:
-            raise
-        _execute_with_retry(get_client().table("kb_entries").update(payload).eq("id", entry_id))
-
-
 def delete_kb_entry(entry_id: str) -> bool:
     result = _execute_with_retry(get_client().table("kb_entries").delete().eq("id", entry_id))
     return bool(result.data)
-
-
-def search_kb(query_embedding: list, persona_id: Optional[str] = None, top_k: int = 5) -> list:
-    params = {"query_embedding": query_embedding, "match_count": top_k}
-    if persona_id:
-        params["filter_persona_id"] = persona_id
-    return _q(get_client().rpc("match_kb_entries", params))
-
 
 # â”€â”€ Agent Logs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -3458,13 +2482,6 @@ def get_error_logs(
             continue
         filtered.append(row)
     return filtered
-
-
-# â”€â”€ n8n Executions Mirror â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def upsert_n8n_execution(data: dict) -> None:
-    get_client().table("n8n_executions").upsert(data, on_conflict="n8n_id").execute()
-
 
 def get_n8n_executions(limit: int = 100, status: Optional[str] = None) -> list:
     q = (
@@ -4255,17 +3272,6 @@ def get_graph_branch_package_v3(
         value = value[0] if value else {}
     return value if isinstance(value, dict) else {}
 
-
-def get_graph_branch_contract(publication_id: str, branch_node_id: str) -> Optional[dict]:
-    if not publication_id or not branch_node_id:
-        return None
-    return _one(
-        get_client().table("graph_branch_contracts").select("*")
-        .eq("publication_id", publication_id).eq("branch_node_id", branch_node_id)
-        .maybe_single()
-    )
-
-
 def get_conversation_ledger(persona_id: str, lead_ref: int) -> Optional[dict]:
     if not persona_id or not lead_ref:
         return None
@@ -4350,38 +3356,6 @@ def get_lead_carry_over_facts(
             latest_by_key[key] = row
     return list(latest_by_key.values())
 
-
-def get_journey_ledger_facts(journey_id: str) -> list[dict]:
-    """Fatos correntes do ledger de uma jornada especifica.
-
-    Usado para atravessar o fim de um pedido: a jornada seguinte nasce com
-    ledger proprio e zero fatos, entao a identidade do cliente (nome e o que o
-    grafo marcar como `carry_over`) precisa vir do ledger anterior. O servico e
-    os campos do galho ficam para tras de proposito.
-    """
-    if not journey_id:
-        return []
-    try:
-        result = get_client().rpc(
-            "conversation_carry_over_facts_v1", {"p_journey_id": journey_id},
-        ).execute()
-        return result.data or []
-    except Exception:
-        # Rolling-deploy compatibility until migration 127 is applied.
-        pass
-    ledger = _one(
-        get_client().table("conversation_ledgers").select("id")
-        .eq("journey_id", journey_id).maybe_single()
-    )
-    if not ledger:
-        return []
-    return _q(
-        get_client().table("conversation_facts").select("*")
-        .eq("ledger_id", ledger["id"]).eq("is_current", True)
-        .eq("status", "known").limit(1000)
-    )
-
-
 def get_current_conversation_journey(persona_id: str, lead_ref: int) -> Optional[dict]:
     if not persona_id or not lead_ref:
         return None
@@ -4429,32 +3403,6 @@ def get_latest_conversation_journey(persona_id: str, lead_ref: int) -> Optional[
         .order("sequence", desc=True).limit(1)
     )
     return rows[0] if rows else None
-
-
-def get_conversation_facts_by_key(ledger_id: str) -> dict:
-    """Every current fact for a ledger, grouped by field_key.
-
-    Unlike get_conversation_ledger()'s flat `facts` dict (one fact per
-    field_key -- correct only when at most one branch is ever active),
-    supporting more than one simultaneously-active branch (branch_action
-    "add") means more than one current fact can share a field_key with a
-    different owner_node_id (e.g. two branches each with their own current
-    "servico"). Grouping by key instead of collapsing to one preserves all
-    of them, for graph_proof_checker_v3.aggregate_missing_fields().
-    """
-    if not ledger_id:
-        return {}
-    rows = _q(
-        get_client().table("conversation_facts").select("*")
-        .eq("ledger_id", ledger_id).eq("is_current", True).limit(1000)
-    )
-    grouped: dict = {}
-    for row in rows:
-        grouped.setdefault(str(row["field_key"]), []).append({
-            **row, "value": row.get("value_json"), "fact_id": row.get("id"),
-        })
-    return grouped
-
 
 def get_active_ledger_branches(ledger_id: str) -> list:
     if not ledger_id:
@@ -4524,28 +3472,6 @@ def mark_ledger_branches_completed(ledger_id: str, branch_anchor_node_ids: list)
         ).execute()
     except Exception:
         pass
-
-
-def add_ledger_branch(ledger_id: str, branch_anchor_node_id: str) -> None:
-    """Record an additional simultaneously-active branch for a ledger.
-
-    Idempotent (upsert on the (ledger_id, branch_anchor_node_id) unique
-    constraint from migration 105) so a retried/duplicated commit never
-    raises -- it just leaves the row as 'active', same as the first call.
-    Same migration-not-applied-yet tolerance as get_active_ledger_branches:
-    this is an audit-trail write, never required for the current turn's own
-    correctness, so a failure here must not fail the whole commit.
-    """
-    if not ledger_id or not branch_anchor_node_id:
-        return
-    try:
-        get_client().table("conversation_ledger_branches").upsert(
-            {"ledger_id": ledger_id, "branch_anchor_node_id": branch_anchor_node_id, "state": "active"},
-            on_conflict="ledger_id,branch_anchor_node_id",
-        ).execute()
-    except Exception:
-        pass
-
 
 def get_wa_validator_session(session_id: str) -> Optional[dict]:
     """Read a WA Validator session's data blob, or None if it doesn't exist."""
@@ -4843,26 +3769,6 @@ def get_conversation_turn_proof(canonical_inbound_id: str) -> Optional[dict]:
         .eq("canonical_inbound_id", canonical_inbound_id).maybe_single()
     )
 
-
-def reset_conversation_ledger_branch_v3(*, persona_id: str, lead_ref: int) -> dict:
-    result = get_client().rpc(
-        "reset_conversation_ledger_branch_v3",
-        {"p_persona_id": persona_id, "p_lead_ref": lead_ref},
-    ).execute()
-    value = getattr(result, "data", None)
-    if isinstance(value, list):
-        value = value[0] if value else {}
-    return value if isinstance(value, dict) else {}
-
-
-def record_purchase_completed(**payload: Any) -> dict:
-    result = get_client().rpc("record_purchase_completed_v1", payload).execute()
-    value = getattr(result, "data", None)
-    if isinstance(value, list):
-        value = value[0] if value else {}
-    return value if isinstance(value, dict) else {}
-
-
 def set_conversation_journey_state(**payload: Any) -> dict:
     """Estado-alvo do pedido, escolhido por um humano.
 
@@ -4898,17 +3804,6 @@ def transition_sales_conversion_status(**payload: Any) -> dict:
         value = value[0] if value else {}
     return value if isinstance(value, dict) else {}
 
-
-def mark_conversation_journey_qualification(**payload: Any) -> dict:
-    result = get_client().rpc(
-        "mark_conversation_journey_qualification_v1", payload
-    ).execute()
-    value = getattr(result, "data", None)
-    if isinstance(value, list):
-        value = value[0] if value else {}
-    return value if isinstance(value, dict) else {}
-
-
 def list_inactivity_recovery_candidates(*, enabled_from: str, cutoff: str, limit: int = 100) -> list[dict]:
     return _q(
         get_client().table("lead_buffer").select("id,persona_id,lead_ref,created_at")
@@ -4928,39 +3823,6 @@ def claim_inactivity_recovery_candidate(*, inbound_id: str) -> dict:
         value = value[0] if value else {}
     return value if isinstance(value, dict) else {}
 
-
-def find_knowledge_rag_entry_by_slug(
-    *,
-    persona_id: str,
-    content_type: str,
-    slug: str,
-) -> Optional[dict]:
-    return _one(
-        get_client()
-        .table("knowledge_rag_entries")
-        .select("*")
-        .eq("persona_id", persona_id)
-        .eq("content_type", content_type)
-        .eq("slug", slug)
-        .maybe_single()
-    )
-
-
-def get_knowledge_item_counts(persona_id: Optional[str] = None) -> dict:
-    q = get_client().table("knowledge_items").select("status,content_type")
-    if persona_id:
-        q = q.eq("persona_id", persona_id)
-    rows = _q(q)
-    by_status: dict = {}
-    by_type: dict = {}
-    for r in rows:
-        s = r["status"]
-        t = r["content_type"]
-        by_status[s] = by_status.get(s, 0) + 1
-        by_type[t] = by_type.get(t, 0) + 1
-    return {"by_status": by_status, "by_type": by_type, "total": len(rows)}
-
-
 # â”€â”€ Sync Runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def insert_sync_run(data: dict) -> dict:
@@ -4971,29 +3833,8 @@ def insert_sync_run(data: dict) -> dict:
 def update_sync_run(run_id: str, data: dict) -> None:
     _execute_with_retry(get_client().table("sync_runs").update(data).eq("id", run_id))
 
-
-def get_sync_runs(limit: int = 20) -> list:
-    return _q(
-        get_client().table("sync_runs")
-        .select("*")
-        .order("started_at", desc=True)
-        .limit(limit)
-    )
-
-
 def insert_sync_log(data: dict) -> None:
     _execute_with_retry(get_client().table("sync_logs").insert(data))
-
-
-def get_sync_logs(run_id: str, limit: int = 200) -> list:
-    return _q(
-        get_client().table("sync_logs")
-        .select("*")
-        .eq("run_id", run_id)
-        .order("created_at", desc=False)
-        .limit(limit)
-    )
-
 
 # â”€â”€ Workflow Bindings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -5026,50 +3867,6 @@ def get_active_whatsapp_binding(persona_id: Optional[str]) -> Optional[dict]:
         .maybe_single()
     )
 
-
-def activate_whatsapp_binding(
-    *,
-    persona_id: str,
-    binding_id: str,
-    provider: str,
-    source: str = "admin.settings",
-) -> dict:
-    """Atomically activate a persona transport and rebind its current leads."""
-    result = _execute_with_retry(
-        get_client().rpc(
-            "activate_persona_whatsapp_binding",
-            {
-                "p_persona_id": persona_id,
-                "p_binding_id": binding_id,
-                "p_provider": provider,
-                "p_source": source,
-            },
-        )
-    )
-    payload = result.data
-    if isinstance(payload, list):
-        return payload[0] if payload else {}
-    return payload or {}
-
-
-def assert_client_portal_schema() -> None:
-    """Fail API startup when the Compose migration contract is incomplete."""
-    checks = (
-        ("app_users", "id,account_type,must_change_password"),
-        ("workflow_bindings", "id,channel,provider,provider_instance_key,provider_secret_ciphertext,connection_status"),
-        ("leads", "id,channel_binding_id,external_contact_id"),
-        ("messages", "id,channel_binding_id"),
-        ("lead_buffer", "id,channel_binding_id"),
-    )
-    for table, fields in checks:
-        try:
-            get_client().table(table).select(fields).limit(1).execute()
-        except Exception as exc:
-            raise RuntimeError(
-                f"Client portal schema is incomplete at {table}; apply migrations 061/062 with Docker Compose."
-            ) from exc
-
-
 def get_default_whatsapp_phone_number_id(persona_id: Optional[str] = None) -> Optional[str]:
     if not persona_id:
         return None
@@ -5079,33 +3876,6 @@ def get_default_whatsapp_phone_number_id(persona_id: Optional[str] = None) -> Op
             return value
     return None
 
-
-def get_active_workflow_binding_by_phone_number_id(phone_number_id: str) -> Optional[dict]:
-    """Resolve routing exclusively by the business number, never by lead phone."""
-    if not phone_number_id:
-        return None
-    return _one(
-        get_client().table("workflow_bindings").select("*")
-        .eq("whatsapp_phone_number_id", phone_number_id).eq("active", True).maybe_single()
-    )
-
-
-def get_workflow_bindings_by_phone_number_id(phone_number_id: str) -> list:
-    """Return every binding that claims a business phone number.
-
-    Normal routing only needs the active binding. Provisioning is stricter:
-    a number already recorded for another persona must be reassigned through
-    the dedicated, audited flow rather than silently becoming a second
-    persona's draft binding.
-    """
-    if not phone_number_id:
-        return []
-    return _q(
-        get_client().table("workflow_bindings").select("*")
-        .eq("whatsapp_phone_number_id", phone_number_id)
-    )
-
-
 def get_workflow_binding_by_id(binding_id: Optional[str]) -> Optional[dict]:
     if not binding_id:
         return None
@@ -5113,107 +3883,6 @@ def get_workflow_binding_by_id(binding_id: Optional[str]) -> Optional[dict]:
         get_client().table("workflow_bindings").select("*")
         .eq("id", binding_id).maybe_single()
     )
-
-
-def update_workflow_binding(binding_id: str, payload: dict) -> dict:
-    from datetime import datetime, timezone
-    update = {**payload, "updated_at": datetime.now(timezone.utc).isoformat()}
-    rows = (
-        get_client().table("workflow_bindings").update(update)
-        .eq("id", binding_id).execute().data or []
-    )
-    return rows[0] if rows else {}
-
-
-def ensure_channel_lead(
-    *,
-    persona_id: str,
-    channel_binding_id: str,
-    external_contact_id: str,
-    display_name: Optional[str] = None,
-    metadata: Optional[dict] = None,
-) -> dict:
-    existing = _one(
-        get_client().table("leads").select("*")
-        .eq("persona_id", persona_id)
-        .eq("channel_binding_id", channel_binding_id)
-        .eq("external_contact_id", external_contact_id)
-        .maybe_single()
-    )
-    if existing:
-        return existing
-    # A lead may already exist for this same contact but only carry
-    # `telefone` (digits-only), not `external_contact_id` — e.g. leads
-    # created through the legacy /process route. Without this fallback,
-    # every inbound webhook for that contact spawns a permanent duplicate
-    # lead instead of continuing the existing conversation. Confirmed live
-    # 2026-08-01 on a real Baita customer (two "Allan" leads, messages
-    # split across them).
-    normalized_phone = re.sub(r"\D", "", external_contact_id or "")
-    if normalized_phone:
-        phone_match = _one(
-            get_client().table("leads").select("*")
-            .eq("persona_id", persona_id)
-            .eq("telefone", normalized_phone)
-            .is_("external_contact_id", "null")
-            .maybe_single()
-        )
-        if phone_match:
-            update_lead(phone_match["id"], {
-                "external_contact_id": external_contact_id,
-                "channel_binding_id": channel_binding_id,
-            })
-            return {
-                **phone_match,
-                "external_contact_id": external_contact_id,
-                "channel_binding_id": channel_binding_id,
-            }
-    payload = {
-        "lead_id": f"channel:{channel_binding_id}:{external_contact_id}",
-        "persona_id": persona_id,
-        "channel_binding_id": channel_binding_id,
-        "external_contact_id": external_contact_id,
-        "nome": display_name,
-        "stage": "novo",
-        "origem": "whatsapp",
-        "metadata": metadata or {},
-    }
-    try:
-        rows = get_client().table("leads").insert(payload).execute().data or []
-        return rows[0] if rows else payload
-    except Exception as exc:
-        if not any(token in str(exc).lower() for token in ("duplicate", "unique", "23505")):
-            raise
-        return _one(
-            get_client().table("leads").select("*")
-            .eq("persona_id", persona_id)
-            .eq("channel_binding_id", channel_binding_id)
-            .eq("external_contact_id", external_contact_id)
-            .maybe_single()
-        ) or {}
-
-
-def debounce_available_at(seconds: int = 3) -> str:
-    from datetime import datetime, timedelta, timezone
-    return (datetime.now(timezone.utc) + timedelta(seconds=max(0, seconds))).isoformat()
-
-
-def enqueue_whatsapp_message(data: dict) -> Optional[dict]:
-    """Legacy buffer-only insert.
-
-    New inbound and outbound traffic must use enqueue_whatsapp_envelope so the
-    message projection and the idempotency lock commit in one transaction.
-    """
-    try:
-        result = get_client().table("lead_buffer").insert(data).execute()
-        return (result.data or [None])[0]
-    except Exception as exc:
-        # Postgres unique violation is expected when Meta retries a webhook.
-        text = str(exc).lower()
-        if "duplicate" in text or "unique" in text or "23505" in text:
-            return None
-        raise
-
 
 def enqueue_whatsapp_envelope(
     *,
@@ -5289,36 +3958,6 @@ def find_recent_duplicate_whatsapp_outbound(
             return row
     return None
 
-
-def claim_whatsapp_buffer(worker_id: str, limit: int = 20, lease_seconds: int = 60) -> list[dict]:
-    result = get_client().rpc("claim_whatsapp_buffer", {
-        "p_worker": worker_id, "p_limit": limit, "p_lease_seconds": lease_seconds,
-    }).execute()
-    rows = result.data or []
-    # Migration 113 preserves the SQL SETOF lead_buffer contract while
-    # exposing the burst identity as convenient top-level worker fields.
-    for row in rows:
-        payload = row.get("payload") or {}
-        for key in (
-            "canonical_id", "burst_member_ids", "evidence_messages", "burst_version",
-        ):
-            if key in payload:
-                row[key] = payload[key]
-        row.setdefault("canonical_id", row.get("id"))
-    return rows
-
-
-def mark_whatsapp_attempt(buffer_id: str, worker_id: str, kind: str) -> bool:
-    result = get_client().rpc(
-        "mark_whatsapp_attempt",
-        {"p_buffer_id": buffer_id, "p_worker": worker_id, "p_kind": kind},
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else False
-    return payload is True
-
-
 def record_whatsapp_safety_violation(
     *,
     binding_id: str,
@@ -5388,33 +4027,6 @@ def complete_conversation_commit(
         payload = payload[0] if payload else {}
     return payload if isinstance(payload, dict) else {}
 
-
-def finalize_proven_conversation_turn(
-    *,
-    inbound_buffer_id: str,
-    binding_id: str,
-    lead_ref: int,
-    correlation_id: str,
-    outbound_id: str,
-    result_payload: dict,
-) -> dict:
-    result = get_client().rpc(
-        "finalize_proven_conversation_turn",
-        {
-            "p_inbound_buffer_id": inbound_buffer_id,
-            "p_binding_id": binding_id,
-            "p_lead_ref": lead_ref,
-            "p_correlation_id": correlation_id,
-            "p_outbound_id": outbound_id,
-            "p_result": result_payload,
-        },
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def complete_whatsapp_buffer(buffer_id: str, status: str, error: str | None = None) -> None:
     from datetime import datetime, timezone
     # Keep the chat projection in step with terminal outbound outbox states.
@@ -5456,133 +4068,6 @@ def complete_whatsapp_buffer(buffer_id: str, status: str, error: str | None = No
                     get_client().table("messages").update({"metadata": merged_metadata})
                     .eq("id", message["id"])
                 )
-
-
-def release_whatsapp_buffer(buffer_id: str, status: str, *, delay_seconds: int, error: str | None, decrement_attempt: bool = False) -> None:
-    from datetime import datetime, timedelta, timezone
-    payload = {
-        "status": status, "last_error": error, "locked_at": None, "locked_by": None,
-        "available_at": (datetime.now(timezone.utc) + timedelta(seconds=max(0, delay_seconds))).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _execute_with_retry(get_client().table("lead_buffer").update(payload).eq("id", buffer_id))
-
-
-def recover_uncommitted_graph_inbound(buffer_id: str, reason: str) -> dict:
-    result = get_client().rpc(
-        "recover_uncommitted_graph_inbound",
-        {"p_buffer_id": buffer_id, "p_reason": reason},
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def recover_unsent_committed_outbound(buffer_id: str, reason: str) -> dict:
-    result = get_client().rpc(
-        "recover_unsent_committed_outbound",
-        {"p_buffer_id": buffer_id, "p_reason": reason},
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def reconcile_committed_graph_inbound(buffer_id: str, reason: str) -> dict:
-    result = get_client().rpc(
-        "reconcile_committed_graph_inbound",
-        {"p_buffer_id": buffer_id, "p_reason": reason},
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def update_whatsapp_delivery_by_binding(
-    binding_id: str,
-    external_message_id: str,
-    status: str,
-) -> None:
-    if not binding_id or not external_message_id:
-        return
-    raw_status = str(status).upper()
-    # Provider PENDING is not an outbox instruction.  It is audit-only: an
-    # external callback must never make a committed row dispatchable again.
-    if raw_status in {"PENDING", "PENDING_SEND", "UNKNOWN", ""}:
-        insert_event({"event_type": "whatsapp.delivery_ack_ignored", "entity_type": "workflow_binding",
-                      "entity_id": binding_id, "payload": {"external_message_id": external_message_id,
-                      "status": raw_status}}, source="whatsapp.delivery")
-        return
-    normalized = {
-        "SERVER_ACK": "sent",
-        "SENT": "sent",
-        "DELIVERY_ACK": "delivered",
-        "DELIVERED": "delivered",
-        "READ": "read",
-        "PLAYED": "read",
-        "ERROR": "failed",
-        "FAILED": "failed",
-    }.get(raw_status)
-    if not normalized:
-        insert_event(
-            {
-                "event_type": "whatsapp.delivery_ack_ignored",
-                "entity_type": "workflow_binding",
-                "entity_id": binding_id,
-                "payload": {
-                    "external_message_id": external_message_id,
-                    "status": raw_status,
-                },
-            },
-            source="whatsapp.delivery",
-        )
-        return
-    get_client().rpc(
-        "reconcile_whatsapp_delivery",
-        {
-            "p_binding_id": binding_id, "p_external_message_id": external_message_id,
-            "p_status": normalized,
-        },
-    ).execute()
-
-
-def complete_whatsapp_outbound(
-    buffer_id: str,
-    *,
-    binding_id: str,
-    correlation_id: str,
-    wamid: str | None,
-    success: bool,
-    error: str | None = None,
-    execution_id: str | None = None,
-) -> dict:
-    result = get_client().rpc(
-        "complete_whatsapp_outbound_result",
-        {
-            "p_buffer_id": buffer_id,
-            "p_binding_id": binding_id,
-            "p_correlation_id": correlation_id,
-            "p_external_message_id": wamid,
-            "p_success": success,
-            "p_error": error,
-            "p_execution_id": execution_id,
-        },
-    ).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def set_lead_buffer_waiting_human(lead_ref: int) -> None:
-    _execute_with_retry(
-        get_client().table("lead_buffer").update({"status": "waiting_human"})
-        .eq("lead_ref", lead_ref).in_("status", ["received", "buffered", "processing", "pending_send", "retry"])
-    )
-
 
 def handoff_whatsapp_lead(lead_ref: int, *, level: str = "full") -> None:
     """Atomically set handoff_level and (for level='full') quarantine queued work."""
@@ -5629,55 +4114,6 @@ def handoff_whatsapp_lead_state(
             },
         )
     )
-
-
-def upsert_workflow_binding(data: dict) -> dict:
-    result = get_client().table("workflow_bindings").upsert(
-        data, on_conflict="workflow_name,persona_id"
-    ).execute()
-    return result.data[0] if result.data else {}
-
-
-def update_workflow_binding_metadata(
-    binding_id: str,
-    metadata: dict,
-) -> dict:
-    result = (
-        get_client()
-        .table("workflow_bindings")
-        .update({"metadata": metadata})
-        .eq("id", binding_id)
-        .execute()
-    )
-    return result.data[0] if result.data else {}
-
-
-# â”€â”€ Brand Profiles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def get_brand_profile(persona_id: str) -> Optional[dict]:
-    return _one(
-        get_client().table("brand_profiles")
-        .select("*")
-        .eq("persona_id", persona_id)
-        .maybe_single()
-    )
-
-
-def upsert_brand_profile(data: dict) -> dict:
-    result = get_client().table("brand_profiles").upsert(
-        data, on_conflict="persona_id"
-    ).execute()
-    return result.data[0] if result.data else {}
-
-
-# â”€â”€ Campaigns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def get_campaigns(persona_id: Optional[str] = None) -> list:
-    q = get_client().table("campaigns").select("*").order("created_at", desc=True)
-    if persona_id:
-        q = q.eq("persona_id", persona_id)
-    return _q(q)
-
 
 # -- Campaign delivery one -------------------------------------------------------
 
@@ -5822,31 +4258,6 @@ def insert_event(
             pass
         return None
 
-
-def get_events(
-    limit: int = 50,
-    event_type: Optional[str] = None,
-    persona_id: Optional[str] = None,
-    entity_id: Optional[str] = None,
-    level: Optional[str] = None,
-) -> list:
-    q = (
-        get_client().table("system_events")
-        .select("*")
-        .order("created_at", desc=True)
-        .limit(limit)
-    )
-    if event_type:
-        q = q.eq("event_type", event_type)
-    if persona_id:
-        q = q.eq("persona_id", persona_id)
-    if entity_id:
-        q = q.eq("entity_id", entity_id)
-    if level:
-        q = q.eq("level", level)
-    return _q(q)
-
-
 def list_system_events(
     entity_type: Optional[str] = None,
     event_types: Optional[list[str]] = None,
@@ -5969,71 +4380,8 @@ def record_graph_projection_event_v2(
         },
     )
 
-
-# â”€â”€ Pipeline Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def get_pipeline_statuses() -> list:
-    return _q(
-        get_client().table("pipeline_status")
-        .select("*")
-        .order("service")
-    )
-
-
 def update_pipeline_status(service: str, data: dict) -> None:
     get_client().table("pipeline_status").update(data).eq("service", service).execute()
-
-
-def get_pipeline_metrics(persona_id: Optional[str] = None) -> dict:
-    from datetime import datetime, timedelta
-    today = (datetime.utcnow() - timedelta(hours=24)).isoformat()
-    client = get_client()
-
-    attention_q = (
-        client.table("knowledge_items")
-        .select("status")
-        .in_("status", ["pending", "needs_persona", "needs_category"])
-    )
-    approved_q = (
-        client.table("knowledge_items")
-        .select("id")
-        .eq("status", "approved")
-        .gte("updated_at", today)
-    )
-    kb_q = (
-        client.table("kb_entries")
-        .select("id")
-        .eq("status", "ATIVO")
-    )
-    asset_q = (
-        client.table("knowledge_items")
-        .select("id")
-        .eq("content_type", "asset")
-        .in_("status", ["pending", "needs_persona"])
-    )
-    if persona_id:
-        attention_q = attention_q.eq("persona_id", persona_id)
-        approved_q = approved_q.eq("persona_id", persona_id)
-        kb_q = kb_q.eq("persona_id", persona_id)
-        asset_q = asset_q.eq("persona_id", persona_id)
-
-    attention_rows = _q(attention_q)
-    approved_rows = _q(approved_q)
-    kb_rows = _q(kb_q)
-    asset_rows = _q(asset_q)
-    error_rows = [
-        row for row in get_error_logs(limit=500)
-        if str(row.get("created_at") or row.get("ts") or "") >= today
-    ]
-
-    return {
-        "pending_attention": len(attention_rows),
-        "approved_today": len(approved_rows),
-        "kb_entries": len(kb_rows),
-        "assets_pending": len(asset_rows),
-        "errors_24h": len(error_rows),
-    }
-
 
 # â”€â”€ Storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -6042,48 +4390,6 @@ def upload_to_storage(bucket: str, path: str, data: bytes, content_type: str = "
     client = get_client()
     client.storage.from_(bucket).upload(path, data, {"content-type": content_type, "upsert": "true"})
     return client.storage.from_(bucket).get_public_url(path)
-
-
-def download_from_storage(bucket: str, path: str) -> bytes:
-    """Download bytes from Supabase Storage using the backend service client."""
-    return get_client().storage.from_(bucket).download(path)
-
-
-def ensure_bucket(name: str, public: bool = False) -> bool:
-    """Make sure a Supabase Storage bucket exists. Idempotent.
-
-    Migration 033 tries to seed `assets-raw` / `assets-derived` via
-    `INSERT INTO storage.buckets`, but the SQL path requires storage-admin
-    privileges and silently misses on fresh projects. This helper closes the
-    gap at boot time so /assets/upload never 502s on a missing bucket.
-
-    Returns True if the bucket exists (created or pre-existing), False on
-    failure. Never raises.
-    """
-    try:
-        client = get_client()
-        try:
-            existing = client.storage.list_buckets() or []
-        except Exception:
-            existing = []
-        names = {b.get("name") if isinstance(b, dict) else getattr(b, "name", None) for b in existing}
-        if name in names:
-            return True
-        client.storage.create_bucket(name, options={"public": public})
-        return True
-    except Exception as exc:
-        msg = str(exc).lower()
-        # supabase-py raises StorageApiError with statusCode=409 / "already exists"
-        # when the bucket exists but list_buckets() failed to enumerate it.
-        if "already exists" in msg or "duplicate" in msg or "409" in msg:
-            return True
-        try:
-            from services import sre_logger
-            sre_logger.warn("supabase_client", f"ensure_bucket({name}) failed: {exc}")
-        except Exception:
-            pass
-        return False
-
 
 # â”€â”€ Assets / asset_readings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -6171,35 +4477,6 @@ def get_asset(asset_id: str) -> Optional[dict]:
     )
     rows = result.data or []
     return rows[0] if rows else None
-
-
-def list_assets(
-    persona_id: Optional[str] = None,
-    upload_context: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-    include_markdown: bool = False,
-) -> list:
-    q = get_client().table("assets").select("*")
-    if persona_id:
-        q = q.eq("persona_id", persona_id)
-    if upload_context:
-        q = q.eq("upload_context", upload_context)
-    if status:
-        q = q.eq("status", status)
-    if not include_markdown:
-        # Markdown companions are inline content of an image asset, never
-        # standalone cards in the /assets grid.
-        q = q.neq("type", "markdown")
-    result = q.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
-    return result.data or []
-
-
-def insert_asset_reading(data: dict) -> dict:
-    result = get_client().table("asset_readings").insert(data).execute()
-    return (result.data or [{}])[0]
-
 
 # ── Inbound WhatsApp media ───────────────────────────────────────────────
 # Files a lead sends over WhatsApp land in the PRIVATE `whatsapp-media`
@@ -6293,97 +4570,6 @@ def link_inbound_media_asset_to_message(message_row_id: int, asset_id: str) -> b
     )
     return bool(result.data)
 
-
-def claim_pending_media_assets(limit: int = 10) -> list:
-    """Assets whose bytes still need fetching and reading."""
-    result = (
-        get_client().table("assets")
-        .select("*")
-        .eq("upload_context", "whatsapp_inbound")
-        .eq("status", "reading")
-        .order("created_at", desc=False)
-        .limit(limit)
-        .execute()
-    )
-    return result.data or []
-
-
-def resolve_media_buffer(
-    buffer_id: str,
-    text: str,
-    *,
-    reading_status: str = "completed",
-    debounce_seconds: int = 3,
-) -> dict:
-    """Publish the extracted text and release the dispatch hold.
-
-    Wraps the SQL function from migration 119 — it has to be one statement so
-    the quiet-burst string_agg cannot race with it and lose the transcription.
-    """
-    result = get_client().rpc("resolve_media_buffer", {
-        "p_buffer_id": buffer_id,
-        "p_text": text,
-        "p_reading_status": reading_status,
-        "p_debounce_seconds": debounce_seconds,
-    }).execute()
-    payload = getattr(result, "data", None)
-    if isinstance(payload, list):
-        payload = payload[0] if payload else None
-    return payload if isinstance(payload, dict) else {"resolved": False}
-
-
-def list_lead_media_assets(persona_id: str, lead_id: int, limit: int = 50) -> list:
-    """Files exchanged with one lead, newest first (media rail in Mensagens)."""
-    if not persona_id or not lead_id:
-        return []
-    result = (
-        get_client().table("assets")
-        .select("*")
-        .eq("persona_id", persona_id)
-        .eq("lead_id", lead_id)
-        .order("created_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
-    return result.data or []
-
-
-def list_asset_readings(asset_id: str) -> list:
-    if not asset_id:
-        return []
-    result = (
-        get_client().table("asset_readings")
-        .select("*")
-        .eq("asset_id", asset_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data or []
-
-
-def is_node_type(node_id: Optional[str], node_type: str) -> bool:
-    """Convenience guard used by /assets and edge wrappers."""
-    if not node_id:
-        return False
-    raw = node_id[3:] if node_id.startswith("gn:") else node_id
-    result = (
-        get_client().table("knowledge_nodes")
-        .select("node_type")
-        .eq("id", raw)
-        .limit(1)
-        .execute()
-    )
-    rows = result.data or []
-    return bool(rows and (rows[0] or {}).get("node_type") == node_type)
-
-
-# â”€â”€ KB Intake tracking â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def insert_kb_intake(data: dict) -> dict:
-    result = get_client().table("kb_intake").insert(data).execute()
-    return (result.data or [{}])[0]
-
-
 # -- Sofia plan session persistence -------------------------------------------------
 
 def get_sofia_plan_session(session_id: str) -> Optional[dict]:
@@ -6428,71 +4614,3 @@ def upsert_sofia_plan_session(
     except Exception:
         return None
     return (result.data or [None])[0] if result else None
-
-
-def get_kb_intake_session(session_id: str) -> Optional[dict]:
-    row = _one(
-        get_client().table("agent_sessions").select("selected_context")
-        .eq("id", session_id).eq("coordinator_key", "sofia_kb_intake")
-        .maybe_single()
-    )
-    state = (row or {}).get("selected_context") or {}
-    value = state.get("kb_intake_session")
-    return value if isinstance(value, dict) else None
-
-
-def upsert_kb_intake_session(session: dict) -> Optional[dict]:
-    session_id = str(session.get("id") or "").strip()
-    if not session_id:
-        return None
-    persona_slug = str((session.get("classification") or {}).get("persona_slug") or "")
-    persona = get_persona(persona_slug) if persona_slug else None
-    row = {
-        "id": session_id,
-        "coordinator_key": "sofia_kb_intake",
-        "persona_id": (persona or {}).get("id"),
-        "selected_context": {"kb_intake_session": session},
-        "status": "completed" if session.get("complete") else "active",
-    }
-    result = _execute_with_retry(
-        get_client().table("agent_sessions").upsert(row, on_conflict="id")
-    )
-    return (result.data or [None])[0] if result else None
-
-
-def list_kb_intake_sessions(limit: int = 500) -> list[dict]:
-    rows = _q(
-        get_client().table("agent_sessions").select("id,selected_context,updated_at")
-        .eq("coordinator_key", "sofia_kb_intake")
-        .order("updated_at", desc=True).limit(max(1, min(limit, 500)))
-    )
-    return [
-        {
-            **dict(((row.get("selected_context") or {}).get("kb_intake_session") or {})),
-            "_updated_at": row.get("updated_at"),
-        }
-        for row in rows
-        if isinstance((row.get("selected_context") or {}).get("kb_intake_session"), dict)
-    ]
-
-# â”€â”€ Knowledge Items: multi-status query â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-
-def get_knowledge_items_multi(
-    statuses: list[str],
-    persona_id: Optional[str] = None,
-    content_type: Optional[str] = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> list:
-    q = (
-        get_client().table("knowledge_items")
-        .select("*")
-        .in_("status", statuses)
-        .order("created_at", desc=True)
-        .range(offset, offset + limit - 1)
-    )
-    if persona_id:
-        q = q.eq("persona_id", persona_id)
-    if content_type:
-        q = q.eq("content_type", content_type)
-    return _q(q)
