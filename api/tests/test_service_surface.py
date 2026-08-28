@@ -31,6 +31,9 @@ def test_service_identity_and_readiness_surface():
     assert "/health" in paths
     assert "/health/ready" in paths
     assert "/process" in paths
+    assert "/internal/v1/conversations/context" in paths
+    assert "/internal/v1/agents/leads/{lead_ref}/journey-events" in paths
+    assert "/internal/conversations/context" not in paths
 
 
 def test_worker_group_is_domain_scoped():

@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from services import agents_service, auth_service, event_emitter, internal_auth, supabase_client
 
 router = APIRouter(prefix="/agents", tags=["agents"])
-internal_router = APIRouter(prefix="/internal/agents", tags=["agents"])
+internal_router = APIRouter(prefix="/internal/v1/agents", tags=["agents"])
 
 
 class PurchaseCompletedBody(BaseModel):

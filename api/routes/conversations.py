@@ -15,7 +15,7 @@ from schemas.conversation import (
 from services import conversation_runtime, internal_auth
 
 
-router = APIRouter(prefix="/internal/conversations", tags=["conversations"])
+router = APIRouter(prefix="/internal/v1/conversations", tags=["conversations"])
 
 
 class ContextRequest(StrictModel):
