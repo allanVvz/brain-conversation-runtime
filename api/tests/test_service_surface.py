@@ -35,6 +35,8 @@ def test_service_identity_and_readiness_surface():
     assert "/internal/v1/conversations/context" in paths
     assert "/internal/v1/agents/leads/{lead_ref}/journey-events" in paths
     assert "/internal/v1/agents/leads/{lead_ref}/journey-state" in paths
+    assert "/internal/v1/runtime/leads/{lead_ref}/pause" in paths
+    assert "/internal/v1/runtime/leads/{lead_ref}/resume" in paths
     assert "/internal/conversations/context" not in paths
 
 
@@ -61,6 +63,8 @@ def test_only_versioned_internal_journey_paths_are_service_authenticated():
     assert is_public_path("/internal/v1/agents/leads/42/journey-events") is True
     assert is_public_path("/internal/v1/agents/leads/42/journey-state") is True
     assert is_public_path("/internal/agents/leads/42/journey-events") is False
+    assert is_public_path("/internal/v1/runtime/leads/42/resume") is True
+    assert is_public_path("/internal/runtime/leads/42/resume") is False
 
 
 def _jwt_for_role(role: str) -> str:

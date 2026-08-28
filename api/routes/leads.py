@@ -5,19 +5,21 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 from services import (
     agents_service,
     auth_service,
     event_emitter,
     journey_outcome,
+    internal_auth,
     knowledge_graph,
     lead_qualification,
     supabase_client,
 )
 
 router = APIRouter(prefix="/leads", tags=["leads"])
+internal_router = APIRouter(prefix="/internal/v1/runtime/leads", tags=["leads"])
 
 
 class LeadAudienceChangeBody(BaseModel):
@@ -1140,3 +1142,99 @@ def acknowledge_handoff(lead_ref: int, request: Request):
         source="leads.acknowledge_handoff",
     )
     return {"ok": True, "lead_ref": lead_ref, "handoff_level": "none"}
+
+
+def _authorize_internal_lead_action(token: str | None) -> None:
+    internal_auth.authorize_webhook_token(token)
+
+
+@internal_router.post("/{lead_ref}/pause")
+def pause_ai_internal(
+    lead_ref: int,
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+):
+    _authorize_internal_lead_action(x_webhook_token)
+    if not agents_service.pause_lead(lead_ref):
+        raise HTTPException(500, "Falha ao pausar lead")
+    event_emitter.emit(
+        "lead.ai_paused",
+        entity_type="lead",
+        entity_id=str(lead_ref),
+        payload={"ai_paused": True, "by": "portal", "actor_user_id": x_brain_actor_id},
+        source="internal.leads.pause",
+    )
+    return {"ok": True, "lead_ref": lead_ref, "ai_paused": True}
+
+
+@internal_router.post("/{lead_ref}/resume")
+def resume_ai_internal(
+    lead_ref: int,
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+):
+    _authorize_internal_lead_action(x_webhook_token)
+    if not agents_service.resume_lead(lead_ref):
+        raise HTTPException(500, "Falha ao retomar lead")
+    event_emitter.emit(
+        "lead.ai_resumed",
+        entity_type="lead",
+        entity_id=str(lead_ref),
+        payload={"ai_paused": False, "by": "portal", "actor_user_id": x_brain_actor_id},
+        source="internal.leads.resume",
+    )
+    return {
+        "ok": True,
+        "lead_ref": lead_ref,
+        "ai_paused": False,
+        "notice": agents_service.reactivation_notice(lead_ref, reason="manual"),
+    }
+
+
+@internal_router.post("/{lead_ref}/acknowledge-handoff")
+def acknowledge_handoff_internal(
+    lead_ref: int,
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+):
+    _authorize_internal_lead_action(x_webhook_token)
+    if not agents_service.acknowledge_partial_handoff(lead_ref):
+        raise HTTPException(500, "Falha ao confirmar handoff")
+    event_emitter.emit(
+        "lead.handoff_acknowledged",
+        entity_type="lead",
+        entity_id=str(lead_ref),
+        payload={"by": "portal", "actor_user_id": x_brain_actor_id},
+        source="internal.leads.acknowledge_handoff",
+    )
+    return {"ok": True, "lead_ref": lead_ref, "handoff_level": "none"}
+
+
+@internal_router.post("/{lead_ref}/handoff")
+def handoff_internal(
+    lead_ref: int,
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+    x_brain_actor_id: str | None = Header(None, alias="X-Brain-Actor-Id"),
+):
+    _authorize_internal_lead_action(x_webhook_token)
+    lead = supabase_client.get_lead_by_ref(lead_ref)
+    if not lead:
+        raise HTTPException(404, "Lead nao encontrado")
+    try:
+        supabase_client.handoff_whatsapp_lead(lead_ref)
+    except Exception as exc:
+        raise HTTPException(500, "Falha ao registrar handoff") from exc
+    event_emitter.emit(
+        "lead.handoff",
+        entity_type="lead",
+        entity_id=str(lead_ref),
+        persona_id=lead.get("persona_id"),
+        payload={
+            "reason": "portal_manual_handoff",
+            "role": "human",
+            "ai_paused": True,
+            "actor_user_id": x_brain_actor_id,
+        },
+        source="internal.leads.handoff",
+    )
+    return {"ok": True, "lead_ref": lead_ref, "ai_paused": True, "handoff": True}

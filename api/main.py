@@ -7,6 +7,7 @@ app = FastAPI(title="Brain Conversation Runtime", version="1.0.0")
 app.middleware("http")(auth_middleware)
 for router in (health.router, conversations.router, agents.router,
                agents.internal_router, insights.router, leads.router,
+               leads.internal_router,
                process.router,
                wa_validator.router, agent_harness.router, logs.router,
                qa_contract.router):
