@@ -3673,6 +3673,7 @@ def _journey_has_confirmed_conversion(
 
 def build_context(
     *, persona_slug: str, lead_ref: int, message: str, message_id: str | None,
+    publication_id: str | None = None,
 ) -> ConversationContext:
     started = time.perf_counter()
     persona = supabase_client.get_persona(persona_slug) or {}
@@ -3690,7 +3691,17 @@ def build_context(
         # Rolling-deploy compatibility while migration 114 is being applied.
         batch = {}
     context_batch_ms = round((time.perf_counter() - context_batch_started) * 1000, 3)
-    publication = batch.get("publication") or supabase_client.get_active_graph_publication(str(persona["id"]))
+    if publication_id:
+        # Validator shadow runs must not reuse the active-publication batch:
+        # its ledger/facts belong to another graph version.
+        batch = {}
+        publication = supabase_client.get_graph_publication_by_id(publication_id)
+        if not publication or str(publication.get("persona_id") or "") != str(persona["id"]):
+            raise PermissionError("publication does not belong to requested persona")
+        if publication.get("status") not in {"compiled", "active"}:
+            raise RuntimeError("shadow GraphRAG publication is not compiled")
+    else:
+        publication = batch.get("publication") or supabase_client.get_active_graph_publication(str(persona["id"]))
     if not publication:
         raise RuntimeError("active GraphRAG v3 publication not found")
     document = publication.get("document_json") or {}

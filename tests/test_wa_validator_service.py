@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 API_ROOT = Path(__file__).resolve().parents[1] / "api"
 if str(API_ROOT) not in sys.path:
@@ -406,6 +408,39 @@ def test_generate_script_falls_back_to_the_v2_store_version_without_a_v3_publica
     assert result["script"]["meta"]["graph_version"] == 14
     assert result["script"]["meta"]["graph_checksum"] == "sha256:legacy-v14"
     assert result["script"]["expected_knowledge"] == ["graph:14:sha256:legacy-v14"]
+
+
+def test_generate_script_pins_a_compiled_shadow_publication(monkeypatch):
+    monkeypatch.setattr(wv.supabase_client, "get_persona", lambda slug: {"id": "persona-1", "name": "Aurora"})
+    monkeypatch.setattr(
+        wv, "_build_graph_context",
+        lambda slug: ("kb", 1, "sha256:legacy", SimpleNamespace(nodes=[_persona_node("appointment")])),
+    )
+    monkeypatch.setattr(
+        wv.supabase_client, "get_graph_publication_by_id",
+        lambda publication_id: {
+            "id": publication_id, "persona_id": "persona-1", "status": "compiled",
+            "version": 41, "checksum": "sha256:shadow-v41", "document_json": _appointment_document(),
+        },
+    )
+    monkeypatch.setattr(wv.supabase_client, "get_persona_routing", lambda slug: {})
+    monkeypatch.setattr(wv.supabase_client, "get_workflow_bindings", lambda persona_id: [])
+    monkeypatch.setattr(wv.supabase_client, "upsert_wa_validator_session", lambda *a, **k: None)
+    monkeypatch.setattr(wv.supabase_client, "insert_event", lambda *a, **k: None)
+
+    result = wv.generate_script("aurora", "sdr_qualificacao_carro", "5511999999999", publication_id="pub-41")
+
+    assert result["script"]["meta"]["publication_id"] == "pub-41"
+    assert result["script"]["meta"]["graph_version"] == 41
+    assert result["script"]["meta"]["graph_checksum"] == "sha256:shadow-v41"
+
+
+def test_generate_script_rejects_shadow_publication_from_another_persona(monkeypatch):
+    monkeypatch.setattr(wv.supabase_client, "get_persona", lambda slug: {"id": "persona-1", "name": "Aurora"})
+    monkeypatch.setattr(wv.supabase_client, "get_graph_publication_by_id", lambda _id: {"persona_id": "persona-2", "status": "compiled"})
+
+    with pytest.raises(ValueError, match="não pertence"):
+        wv.generate_script("aurora", "sdr_qualificacao_carro", "5511999999999", publication_id="foreign")
 
 
 def _semantic_audit_inputs():
