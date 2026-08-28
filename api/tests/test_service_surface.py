@@ -98,6 +98,8 @@ def test_other_domain_modules_are_not_shipped_in_runtime_source():
         "api/services/media_ingest.py",
         "api/services/conversation_graph.py",
         "api/services/asset_graph_contract.py",
+        "api/services/approved_knowledge_snapshots.py",
+        "api/services/embedded_markdown.py",
     )
     assert [path for path in forbidden_files if (ROOT / path).exists()] == []
 
