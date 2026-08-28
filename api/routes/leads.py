@@ -1,4 +1,4 @@
-﻿import csv
+import csv
 import hashlib
 import io
 import re
@@ -473,7 +473,7 @@ async def _legacy_import_leads_csv(
     started_at = datetime.now(timezone.utc).isoformat()
     headers = list(reader.fieldnames or [])
 
-    # System "import" audience is idempotent â€” safe to ensure even if the batch
+    # System "import" audience is idempotent — safe to ensure even if the batch
     # eventually fails; nothing is attached to it unless we insert memberships.
     import_audience = supabase_client.ensure_import_audience(
         persona_id,
@@ -595,7 +595,7 @@ async def _legacy_import_leads_csv(
 
     finished_at = datetime.now(timezone.utc).isoformat()
 
-    # Total == 0 â†’ CSV header-only. Refuse without persisting noise.
+    # Total == 0 → CSV header-only. Refuse without persisting noise.
     if stats["total"] == 0:
         raise HTTPException(400, "CSV sem linhas alem do cabecalho.")
 
@@ -661,7 +661,7 @@ _STALE_RUNNING_THRESHOLD_SECONDS = 120
 def _reclassify_stale_running(item: dict) -> dict:
     """Mark batches stuck on `running` (or sem status terminal) as `failed`.
 
-    Cobre lixo legado de antes da gravacao atomica do handler â€” o handler novo
+    Cobre lixo legado de antes da gravacao atomica do handler — o handler novo
     nunca escreve `running`, mas eventos antigos podem persistir. Sem este
     filtro o frontend listava esses batches como 'imports validos' com 0/0/0.
     """
@@ -1140,4 +1140,3 @@ def acknowledge_handoff(lead_ref: int, request: Request):
         source="leads.acknowledge_handoff",
     )
     return {"ok": True, "lead_ref": lead_ref, "handoff_level": "none"}
-

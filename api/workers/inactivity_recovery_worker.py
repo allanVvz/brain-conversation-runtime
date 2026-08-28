@@ -1,4 +1,4 @@
-﻿"""Conservative recovery detector for uncommitted canonical inbounds.
+"""Conservative recovery detector for uncommitted canonical inbounds.
 
 Disabled and dry-run by default. It never creates proactive outbound messages
 and never resumes a paused lead.
@@ -46,4 +46,3 @@ class InactivityRecoveryWorker(BaseWorker):
                 sre_logger.info(self.name, f"pending_response_detected inbound={row.get('id')}")
             elif result.get("state") == "requeued":
                 sre_logger.info(self.name, f"canonical inbound requeued={row.get('id')}")
-

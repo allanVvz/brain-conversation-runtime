@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """WA Validator API routes."""
 
 import logging
@@ -213,7 +213,7 @@ async def upload_validation_media(
 def validator_retention(request: Request, hours: int = 12):
     """Admin-only, read-only inventory of canonical synthetic retention."""
     if not auth_service.is_admin(auth_service.current_user(request)):
-        raise HTTPException(403, "Apenas administradores podem executar retenÃ§Ã£o.")
+        raise HTTPException(403, "Apenas administradores podem executar retenção.")
     if hours < 1 or hours > 168:
         raise HTTPException(400, "hours deve estar entre 1 e 168")
     return wa_validator_service.cleanup_expired_artifacts(hours=hours, dry_run=True)
@@ -235,4 +235,3 @@ def analyze_gaps(request: Request, body: AnalyzeRequest):
             "classifier_sent": body.model,
             "traceback": tb,
         })
-

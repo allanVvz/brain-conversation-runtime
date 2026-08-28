@@ -1,4 +1,4 @@
-﻿import json
+import json
 
 import pytest
 
@@ -208,7 +208,7 @@ def test_resync_workflow_reuses_existing_credential_and_reactivates(monkeypatch)
     """Regression test: this replaces the manual SSH ritual (rebuild
     workflow from the template on disk, update_workflow, activate_workflow)
     that was run by hand for every persona-level engine/config change this
-    session â€” the settings UI must be able to trigger the same steps."""
+    session — the settings UI must be able to trigger the same steps."""
     calls = {}
     _silence_events(monkeypatch)
 
@@ -381,4 +381,3 @@ def test_check_workflow_wiring_requires_config_present(monkeypatch):
     result = deepseek_n8n_service.check_workflow_wiring({})
     assert result["ok"] is False
     assert "nao provisionado" in result["reason"]
-

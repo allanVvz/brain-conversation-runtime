@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import logging
 import traceback
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ def list_insights(request: Request, status: str = Query(None), limit: int = 50, 
         return sorted(rows, key=lambda row: str(row.get("created_at") or ""), reverse=True)[:limit]
     except Exception as exc:
         logger.error("list_insights failed (status=%r): %s\n%s", status, exc, traceback.format_exc())
-        return []          # degrade gracefully â€” dashboard shows empty state instead of crashing
+        return []          # degrade gracefully — dashboard shows empty state instead of crashing
 
 
 @router.patch("/{insight_id}")
@@ -55,4 +55,3 @@ async def trigger_validator(request: Request):
     except Exception as exc:
         logger.error("trigger_validator failed: %s\n%s", exc, traceback.format_exc())
         raise HTTPException(500, str(exc))
-

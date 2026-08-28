@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
@@ -76,7 +76,7 @@ def test_sales_opening_resolves_and_emits_the_published_selector_field():
         "status": "known",
         "value": "uso-proprio-varejo",
         "source_message_id": "validator:opening",
-        "evidence_span": "uso prÃ³prio",
+        "evidence_span": "uso próprio",
         "confidence": 1.0,
         "metadata": {
             "source": "service_resolution",
@@ -95,8 +95,8 @@ def test_sales_bundle_publishes_a_safe_unknown_commercial_deferral():
     policy = document["common_contract"]["conversation_policy"]
 
     assert policy["doubt_handling"]["deferred_response"] == (
-        "Ainda nÃ£o tenho uma informaÃ§Ã£o publicada e validada sobre preÃ§o, estoque, "
-        "prazo, polÃ­tica ou pedido mÃ­nimo. Vou encaminhar sua dÃºvida para a equipe."
+        "Ainda não tenho uma informação publicada e validada sobre preço, estoque, "
+        "prazo, política ou pedido mínimo. Vou encaminhar sua dúvida para a equipe."
     )
     assert policy["safety"][
         "forbid_unpublished_price_stock_deadline_policy"
@@ -139,13 +139,13 @@ def test_graph_context_does_not_mask_invalid_legacy_v2(monkeypatch):
     monkeypatch.setattr(
         wa_validator_service,
         "_published_graph",
-        lambda _slug: (_ for _ in ()).throw(ValueError("Graph JSON v2 publicado nÃ£o estÃ¡ vÃ¡lido")),
+        lambda _slug: (_ for _ in ()).throw(ValueError("Graph JSON v2 publicado não está válido")),
     )
     try:
         wa_validator_service._build_graph_context("tock-fatal")
         raise AssertionError("expected invalid v2 rejection")
     except ValueError as exc:
-        assert "nÃ£o estÃ¡ vÃ¡lido" in str(exc)
+        assert "não está válido" in str(exc)
 
 
 def test_graph_context_rejects_inconsistent_v3_and_uses_top_level_node_status(monkeypatch):
@@ -193,7 +193,7 @@ def test_validator_gaps_become_review_only_sofia_proposals():
             "priority": "high",
         }, {
             "topic": "unsupported_claim_not_invented",
-            "evidence": "A resposta afirmou preÃ§o sem evidÃªncia.",
+            "evidence": "A resposta afirmou preço sem evidência.",
             "priority": "high",
         }],
     )
@@ -204,4 +204,3 @@ def test_validator_gaps_become_review_only_sofia_proposals():
         "branch_resolution_review", "knowledge_gap"
     ]
     assert all(item["publication_allowed"] is False for item in review["proposals"])
-

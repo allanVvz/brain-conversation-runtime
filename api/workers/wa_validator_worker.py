@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import os
@@ -51,4 +51,3 @@ class WaValidatorWorker(BaseWorker):
             f"{result.get('lead_count', 0)} leads, "
             f"{result.get('session_count', 0)} sessions",
         )
-

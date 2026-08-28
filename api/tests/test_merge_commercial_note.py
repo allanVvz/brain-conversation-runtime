@@ -1,4 +1,4 @@
-﻿"""supabase_client.merge_commercial_note â€” shared by the admin
+"""supabase_client.merge_commercial_note — shared by the admin
 (routes.leads) and client-portal (routes.portal) lead-update endpoints,
 so an edit from either surface lands the same way: the display-only
 commercial_note mirror AND conversation_state.appointment_request (the
@@ -49,4 +49,3 @@ def test_merge_commercial_note_handles_empty_starting_metadata():
     merged = supabase_client.merge_commercial_note(None, {"servico": "pintura"})
     assert merged["commercial_note"]["servico"] == "pintura"
     assert merged["conversation_state"]["appointment_request"]["servico"] == "pintura"
-

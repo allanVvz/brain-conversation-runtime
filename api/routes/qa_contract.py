@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import hashlib
@@ -111,7 +111,7 @@ def _resolve_sofia_persona(request: Request, persona_ref: str) -> dict:
     return persona
 
 
-# â”€â”€ Sofia FAQ generation (adaptar_faqs_universais_ao_grafo) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Sofia FAQ generation (adaptar_faqs_universais_ao_grafo) ──────────────────
 
 def _strip_graph_id(node_id: Optional[str]) -> str:
     raw = str(node_id or "").strip()
@@ -174,7 +174,7 @@ def _handle_sofia_faq_generation(
             "ok": True,
             "persisted": False,
             "needs_clarification": True,
-            "sofia_message": "Selecione um node (produto, grupo ou FAQ) no grafo, ou cite o tÃ­tulo do node, para eu gerar as perguntas no galho certo.",
+            "sofia_message": "Selecione um node (produto, grupo ou FAQ) no grafo, ou cite o título do node, para eu gerar as perguntas no galho certo.",
             "graph_patch": None,
             "faq_suggestions": [],
             "tool_calls": [{"tool": sofia_faq_tool.SOURCE_TOOL, "score": 0.0, "result": None}],
@@ -200,8 +200,8 @@ def _handle_sofia_faq_generation(
         "persisted": False,
         "needs_clarification": False,
         "sofia_message": (
-            f"Gerei {result['count']} sugestÃµes de FAQ para {result['parent_node_label'] or 'esse node'}. "
-            "Revise, edite e aceite as que quiser â€” elas entram como rascunho atÃ© vocÃª aprovar."
+            f"Gerei {result['count']} sugestões de FAQ para {result['parent_node_label'] or 'esse node'}. "
+            "Revise, edite e aceite as que quiser — elas entram como rascunho até você aprovar."
         ),
         "graph_patch": None,
         "faq_suggestions": result["suggestions"],
@@ -384,7 +384,7 @@ CANONICAL_OPERATIONS: dict[str, dict[str, Any]] = {
     "create_default_audience": {
         "risk_level": "low",
         "required_validation": ["canonical_chain"],
-        "keywords": ["audiencia", "audiÃªncia", "padrao", "padrÃ£o", "default", "crie"],
+        "keywords": ["audiencia", "audiência", "padrao", "padrão", "default", "crie"],
     },
     "move_product_to_group": {
         "risk_level": "medium",
@@ -1170,7 +1170,7 @@ def sofia_graph_command(body: SofiaGraphCommandBody, request: Request):
     # FAQ generation/regeneration is handled by the adaptar_faqs_universais_ao_grafo
     # tool, which returns editable suggestions (no patch, no auto-persist) anchored
     # to the active branch. Intercept before the deterministic patch flow so these
-    # commands never fall into "operaÃ§Ã£o ambÃ­gua".
+    # commands never fall into "operação ambígua".
     faq_intent = sofia_faq_tool.detect_faq_generation_intent(effective_command)
     if faq_intent:
         return _handle_sofia_faq_generation(
@@ -1331,7 +1331,7 @@ def sofia_graph_command(body: SofiaGraphCommandBody, request: Request):
     if destructive_requested and not body.context.allow_destructive:
         return {
             "ok": True,
-            "sofia_message": "A alteraÃ§Ã£o destrutiva estÃ¡ pronta, mas precisa de confirmaÃ§Ã£o.",
+            "sofia_message": "A alteração destrutiva está pronta, mas precisa de confirmação.",
             "graph_patch": patch,
             "persisted": False,
             "needs_clarification": True,
@@ -1416,7 +1416,7 @@ def sofia_graph_command(body: SofiaGraphCommandBody, request: Request):
     fresh_state = sofia_orchestrator.get_session_state(session_id)
     return {
         "ok": True,
-        "sofia_message": plan.get("sofia_message") or "AlteraÃ§Ã£o publicada no Graph JSON canÃ´nico.",
+        "sofia_message": plan.get("sofia_message") or "Alteração publicada no Graph JSON canônico.",
         "graph_patch": patch,
         "persisted": True,
         "publication": publication,
@@ -1662,7 +1662,7 @@ def sofia_graph_command(body: SofiaGraphCommandBody, request: Request):
 @router.post("/sofia/faq/accept")
 def sofia_faq_accept(body: SofiaFaqAcceptBody, request: Request):
     """Persist accepted FAQ suggestions as pending/draft FAQ nodes connected to
-    their branch parent. They are NOT sent to Embedded â€” they follow the normal
+    their branch parent. They are NOT sent to Embedded — they follow the normal
     approve -> publish-to-Embedded flow afterwards."""
     persona = _resolve_sofia_persona(request, _persona_ref(body.persona_slug, body.persona_ref))
     persona_id = persona.get("id")
@@ -1707,7 +1707,7 @@ def sofia_faq_accept(body: SofiaFaqAcceptBody, request: Request):
             {
                 "node_type": "faq",
                 "slug": faq_slug,
-                "title": f"FAQ â€” {parent_doc.label}",
+                "title": f"FAQ — {parent_doc.label}",
                 "summary": markdown[:400],
                 "status": "pending_validation",
                 "metadata": {
@@ -1833,7 +1833,7 @@ def sofia_faq_accept(body: SofiaFaqAcceptBody, request: Request):
 def sofia_faq_append(body: SofiaFaqAppendBody, request: Request):
     """Append accepted suggestions to a FAQ node's OWN Markdown body.
 
-    The "Gerar" action on a FAQ node updates that same FAQ â€” it never creates a
+    The "Gerar" action on a FAQ node updates that same FAQ — it never creates a
     new FAQ node. The FAQ stays/returns to pending (draft); if it was already
     published, it is withdrawn from Embedded (its section is removed from the
     Embedded body) and must be approved + published again."""
@@ -1969,4 +1969,3 @@ def sofia_patch_plan_json(body: SofiaPlanJsonPatchBody, request: Request):
         command=body.command,
     )
     return {"ok": True, "plan_json": plan_json}
-
