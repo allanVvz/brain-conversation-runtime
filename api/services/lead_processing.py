@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import time
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import HTTPException
 from schemas.events import LeadEvent
 from core import context_builder, classifier, decision_engine, insight_engine
 from agents.sdr import SDRAgent
@@ -14,7 +14,6 @@ from services.deterministic_sdr import load_catalog
 from pathlib import Path
 from datetime import datetime, timezone
 
-router = APIRouter(tags=["process"])
 logger = logging.getLogger("process")
 
 _AGENTS = {
@@ -31,10 +30,9 @@ _ROLE_TO_AGENT_KEY = {
 }
 
 
-@router.post("/process")
-async def process(
+async def process_lead(
     event: LeadEvent,
-    x_webhook_token: str | None = Header(default=None, alias="X-Webhook-Token"),
+    x_webhook_token: str | None = None,
 ):
     t0 = time.monotonic()
     correlation_id = f"classifier:{event.lead_ref or event.lead_id or int(time.time() * 1000)}"

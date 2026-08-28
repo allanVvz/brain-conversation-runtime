@@ -10,8 +10,6 @@ from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional, Any
 
-from routes import graph as graph_routes
-from routes.process import process as process_route
 from schemas.events import LeadEvent
 from schemas.graph_json_v2 import GraphJson
 from services import (
@@ -20,9 +18,11 @@ from services import (
     embedded_markdown,
     graph_document_publisher,
     graph_json_v2_store,
+    graph_preflight,
     knowledge_graph,
     knowledge_lifecycle,
     knowledge_taxonomy,
+    lead_processing,
     sofia_faq_tool,
     sofia_orchestrator,
     supabase_client,
@@ -896,8 +896,7 @@ def graph_generate(body: GraphGenerateBody, request: Request):
 def graph_validate(body: GraphValidateBody, request: Request):
     _require_non_production()
     _require_qa_persona(request, "vz-lupas")
-    payload = graph_routes.GraphPreflightBody(graph=body.graph, tree_edge_ids=body.tree_edge_ids)
-    return graph_routes.graph_contract_preflight_vzlupas(payload)
+    return graph_preflight.run_vzlupas_preflight(body.graph, body.tree_edge_ids)
 
 
 @router.post("/faq/approve")
@@ -1061,7 +1060,7 @@ async def sdr_ask(body: SdrAskBody, request: Request):
         cep=body.cep,
         persona_slug=persona_slug,
     )
-    result = await process_route(event=event, x_webhook_token=None)
+    result = await lead_processing.process_lead(event=event, x_webhook_token=None)
     return {
         "ok": True,
         "persona_slug": persona_slug,
