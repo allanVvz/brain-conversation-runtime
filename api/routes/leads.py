@@ -30,6 +30,12 @@ class LeadAudienceChangeBody(BaseModel):
     source_audience_slug: str | None = None
 
 
+class InternalLeadDecorationBody(BaseModel):
+    leads: list[dict]
+    persona_id: str | None = None
+    validation_scope: str = Field(default="all", pattern="^(exclude|only|all)$")
+
+
 class LeadGroupBody(BaseModel):
     persona_id: str
     audience_id: str
@@ -1146,6 +1152,20 @@ def acknowledge_handoff(lead_ref: int, request: Request):
 
 def _authorize_internal_lead_action(token: str | None) -> None:
     internal_auth.authorize_webhook_token(token)
+
+
+@internal_router.post("/decorate")
+def decorate_leads_internal(
+    body: InternalLeadDecorationBody,
+    x_webhook_token: str | None = Header(None, alias="X-Webhook-Token"),
+) -> dict:
+    _authorize_internal_lead_action(x_webhook_token)
+    scoped = lead_qualification.filter_validation_scope(
+        body.leads, body.validation_scope
+    )
+    return {
+        "items": journey_outcome.decorate_leads(scoped, body.persona_id)
+    }
 
 
 @internal_router.post("/{lead_ref}/pause")

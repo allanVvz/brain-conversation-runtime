@@ -44,6 +44,7 @@ def test_service_identity_and_readiness_surface():
     assert "/internal/v1/agents/leads/{lead_ref}/journey-state" in paths
     assert "/internal/v1/runtime/leads/{lead_ref}/pause" in paths
     assert "/internal/v1/runtime/leads/{lead_ref}/resume" in paths
+    assert "/internal/v1/runtime/leads/decorate" in paths
     assert "/internal/conversations/context" not in paths
 
 
@@ -137,3 +138,28 @@ def test_runtime_repository_has_only_the_reachable_domain_surface():
         "update_persona_config",
         "create_campaign",
     })
+
+
+def test_internal_lead_decoration_authenticates_and_stays_runtime_owned(monkeypatch):
+    from routes import leads
+
+    calls = []
+    monkeypatch.setattr(leads.internal_auth, "authorize_webhook_token", calls.append)
+    monkeypatch.setattr(
+        leads.lead_qualification,
+        "filter_validation_scope",
+        lambda rows, scope: rows if scope == "exclude" else [],
+    )
+    monkeypatch.setattr(
+        leads.journey_outcome,
+        "decorate_leads",
+        lambda rows, persona_id: [{**row, "business_model": "sales"} for row in rows],
+    )
+    body = leads.InternalLeadDecorationBody(
+        leads=[{"id": 42}], persona_id="persona-1", validation_scope="exclude"
+    )
+
+    result = leads.decorate_leads_internal(body, "internal-token")
+
+    assert calls == ["internal-token"]
+    assert result == {"items": [{"id": 42, "business_model": "sales"}]}
