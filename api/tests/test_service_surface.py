@@ -11,6 +11,7 @@ os.environ.setdefault("KNOWLEDGE_TAXONOMY_OFFLINE", "true")
 os.environ.setdefault("CURRENT_SCHEMA_VERSION", "130")
 
 import main
+from repositories import runtime as runtime_repository
 from services import supabase_client
 from middleware.auth import is_public_path
 from workers.runner import WORKERS
@@ -100,3 +101,7 @@ def test_readiness_uses_image_schema_requirement_and_build_metadata(monkeypatch)
     assert result["required_schema_version"] == 131
     assert result["source_sha"] == "a" * 40
     assert result["build_digest"] == "sha256:image"
+
+
+def test_legacy_database_module_is_runtime_repository_alias():
+    assert supabase_client is runtime_repository
