@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 from fastapi import HTTPException
+from brain_contracts import CanonicalInboundEnvelope
 
 from utils.tls import get_ca_bundle_path
 
@@ -55,3 +56,18 @@ def enqueue_outbound(**payload: Any) -> dict:
 
 def store_validator_media(**payload: Any) -> dict:
     return _post("/internal/v1/transport/messages/validator-media", payload)
+
+
+def enqueue_validator_inbound(**payload: Any) -> dict:
+    envelope = CanonicalInboundEnvelope(**payload)
+    return _post(
+        "/internal/v1/transport/messages/validator-inbound",
+        envelope.model_dump(mode="json"),
+    )
+
+
+def complete_validator_inbound(session_id: str, turn: int) -> dict:
+    return _post(
+        f"/internal/v1/transport/messages/validator-inbound/{session_id}/{turn}/complete",
+        {},
+    )

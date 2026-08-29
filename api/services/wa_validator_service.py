@@ -2712,34 +2712,17 @@ async def run_session_direct(
                 # burst sibling, producing ``burst_superseded``.  Keep the
                 # canonical evidence row in a non-dispatchable state until
                 # the v3 audit proves the commit, then terminalize it below.
-                envelope = supabase_client.enqueue_whatsapp_envelope(
-                    buffer={
-                        "persona_id": persona.get("id"),
-                        "lead_ref": lead_ref,
-                        "channel_binding_id": channel_binding_id,
-                        "whatsapp_phone_number_id": None,
-                        "external_message_id": message_id,
-                        "direction": "inbound",
-                        "payload": {"text": text, "sender": "wa-validator"},
-                        "status": "waiting_human",
-                        "batch_key": f"{persona.get('id')}:{lead_ref}",
-                        "idempotency_key": f"inbound:wa-validator:{message_id}",
-                        "correlation_id": correlation_id,
-                    },
-                    message={
-                        "lead_id": lead_ref,
-                        "role": "user",
-                        "content": text,
-                        "direction": "inbound",
-                        "status": "buffered",
-                        "channel": "whatsapp",
-                        "sender_id": "wa-validator",
-                        "external_message_id": message_id,
-                        "channel_binding_id": channel_binding_id,
-                        "correlation_id": correlation_id,
-                        "metadata": {"provider": "wa-validator"},
-                        "created_at": ts_now,
-                    },
+                envelope = transport_client.enqueue_validator_inbound(
+                    inbound_id=message_id,
+                    correlation_id=correlation_id,
+                    persona_id=persona.get("id"),
+                    persona_slug=persona_slug,
+                    lead_ref=str(lead_ref),
+                    channel_binding_id=channel_binding_id,
+                    provider="internal_validator",
+                    received_at=ts_now,
+                    message_type="text",
+                    content={"text": text},
                 )
                 buffer_uuid = str(envelope.get("buffer_id") or "")
                 _session_update(session_id, output={"conversation": list(conversation), "status": "running"})
@@ -2894,7 +2877,7 @@ async def run_session_direct(
                         # dispatch worker, consumed this canonical inbound.
                         # Only mark it terminal after the decision, proof and
                         # outbox invariants above all passed.
-                        supabase_client.complete_whatsapp_buffer(buffer_uuid, "sent")
+                        transport_client.complete_validator_inbound(session_id, i)
                 except Exception as exc:
                     tb = traceback.format_exc()
                     _log.error(
