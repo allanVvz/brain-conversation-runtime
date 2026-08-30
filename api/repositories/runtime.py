@@ -2964,48 +2964,6 @@ def complete_conversation_commit(
         payload = payload[0] if payload else {}
     return payload if isinstance(payload, dict) else {}
 
-def complete_whatsapp_buffer(buffer_id: str, status: str, error: str | None = None) -> None:
-    from datetime import datetime, timezone
-    # Keep the chat projection in step with terminal outbound outbox states.
-    # Without this, an operator sees a forever "pending" bubble even though
-    # lead_buffer contains the actionable failure reason.
-    buffer = _one(
-        get_client().table("lead_buffer")
-        .select("direction,channel_binding_id,correlation_id")
-        .eq("id", buffer_id)
-        .maybe_single()
-    ) or {}
-    _execute_with_retry(get_client().table("lead_buffer").update({
-        "status": status, "last_error": error, "locked_at": None, "locked_by": None,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }).eq("id", buffer_id))
-    if buffer.get("direction") == "outbound" and buffer.get("channel_binding_id") and buffer.get("correlation_id"):
-        messages_query = (
-            get_client().table("messages")
-            .select("id,metadata")
-            .eq("channel_binding_id", buffer["channel_binding_id"])
-            .eq("correlation_id", buffer["correlation_id"])
-            .not_.in_("status", ["sent", "delivered", "read"])
-        )
-        message_rows = _q(messages_query)
-        _execute_with_retry(
-            get_client().table("messages").update({"status": status})
-            .eq("channel_binding_id", buffer["channel_binding_id"])
-            .eq("correlation_id", buffer["correlation_id"])
-            .not_.in_("status", ["sent", "delivered", "read"])
-        )
-        if error:
-            for message in message_rows:
-                merged_metadata = {
-                    **(message.get("metadata") or {}),
-                    "outbox_error": str(error)[:800],
-                    "outbox_buffer_id": buffer_id,
-                }
-                _execute_with_retry(
-                    get_client().table("messages").update({"metadata": merged_metadata})
-                    .eq("id", message["id"])
-                )
-
 def handoff_whatsapp_lead(lead_ref: int, *, level: str = "full") -> None:
     """Atomically set handoff_level and (for level='full') quarantine queued work."""
     _execute_with_retry(
