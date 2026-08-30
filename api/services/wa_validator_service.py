@@ -109,6 +109,47 @@ def _session_list(
         limit=limit, persona_slug=persona_slug, since_hours=since_hours,
     )
 
+
+def _terminalize_failed_validator_inbound(
+    *,
+    buffer_id: str,
+    lead_ref: int,
+    error: str,
+    diagnostic: dict,
+) -> dict:
+    """Make a failed synthetic inbound terminal under Transport ownership.
+
+    The validator owns neither ``lead_buffer`` nor the dispatch lifecycle.  A
+    failed proof used to return from the driver before its success-only
+    ``complete_validator_inbound`` call, leaving the canonical inbound in
+    ``processing`` indefinitely.  Preserve the complete non-secret
+    diagnostic in the validator session, then ask Transport to dead-letter
+    precisely that inbound so it cannot be claimed again.
+    """
+    result = {
+        "buffer_id": buffer_id,
+        "error": str(error)[:1000],
+        "diagnostic": diagnostic,
+    }
+    if not buffer_id:
+        result["terminalization"] = "skipped_missing_buffer_id"
+        return result
+    try:
+        terminal = transport_client.quarantine_inbound_technical_failure(
+            buffer_id, lead_ref, str(error)[:1000]
+        )
+        result["terminalization"] = terminal
+    except Exception as terminal_exc:
+        # Do not hide an ownership-boundary failure: the original exception
+        # remains the session failure and this separate detail tells an
+        # operator why the inbound could not be terminalized.
+        logger.exception(
+            "WA Validator failed to terminalize synthetic inbound buffer_id=%s",
+            buffer_id,
+        )
+        result["terminalization_error"] = str(terminal_exc)[:1000]
+    return result
+
 # ── Bot registry ───────────────────────────────────────────────────────────────
 _BOT_REGISTRY: list[dict] = []
 
@@ -2736,6 +2777,7 @@ async def run_session_direct(
                 )
                 buffer_uuid = str(envelope.get("buffer_id") or "")
                 _session_update(session_id, output={"conversation": list(conversation), "status": "running"})
+                turn_audit: dict | None = None
                 try:
                     # Confirmed live 2026-08-08: hardcoding "conversation_v1"
                     # here got n8n_agents steps rejected by the
@@ -2802,7 +2844,6 @@ async def run_session_direct(
                             inbound_buffer_id=event["buffer_id"],
                             publication_id=session.get("publication_id"),
                         )
-                    turn_audit: dict | None = None
                     if pipeline_contract == "conversation_v3":
                         turn_audit = await _wait_for_turn_audit_v3(
                             buffer_uuid,
@@ -2893,12 +2934,42 @@ async def run_session_direct(
                     _log.error(
                         "Step %d %s pipeline failed:\n%s", i, conversation_mode, tb
                     )
+                    proof_observation: dict = {}
+                    if buffer_uuid:
+                        try:
+                            proof_observation = (
+                                supabase_client.get_conversation_turn_proof(buffer_uuid)
+                                or {}
+                            )
+                        except Exception:
+                            _log.exception(
+                                "Could not read failed validator proof buffer_id=%s",
+                                buffer_uuid,
+                            )
+                    diagnostic = {
+                        "session_id": session_id,
+                        "turn": i,
+                        "buffer_id": buffer_uuid,
+                        "message_id": message_id,
+                        "correlation_id": correlation_id,
+                        "conversation_mode": conversation_mode,
+                        "pipeline_contract": pipeline_contract,
+                        "turn_audit": turn_audit,
+                        "proof_observation": proof_observation,
+                    }
+                    terminalization = _terminalize_failed_validator_inbound(
+                        buffer_id=buffer_uuid,
+                        lead_ref=int(lead_ref),
+                        error=str(exc),
+                        diagnostic=diagnostic,
+                    )
                     turn = {
                         "role": "bot",
                         "text": f"(erro: {exc})",
                         "ts": datetime.now(timezone.utc).isoformat(),
                         "error": True,
                         "error_detail": tb,
+                        "failure_diagnostic": terminalization,
                     }
 
                 conversation.append(turn)
