@@ -535,6 +535,21 @@ def test_semantic_turn_audit_accepts_acknowledgement_and_first_missing_question(
     assert audit["asked_field"] == "nome_cliente"
 
 
+def test_semantic_turn_audit_accepts_published_first_missing_paraphrase():
+    inputs = _semantic_audit_inputs()
+    question = inputs["contract"]["questions"]["q:name"]
+    question["text"] = "Para continuar, qual e o seu nome completo?"
+    question["paraphrases"] = ["Pode me dizer seu nome?"]
+    inputs["turn"]["text"] = (
+        "Entendi o seu objetivo. Para eu te ajudar, pode me dizer seu nome?"
+    )
+
+    audit = wv._semantic_turn_audit(**inputs)
+
+    assert audit["passed"] is True
+    assert audit["criteria"]["first_missing_field_only"] is True
+
+
 def test_semantic_turn_audit_accepts_graph_bound_service_pending_confirmation():
     inputs = _semantic_audit_inputs()
     inputs["customer_step"] = {
