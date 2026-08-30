@@ -1898,6 +1898,13 @@ def _semantic_turn_audit(
     )
     previous_asked_field = str(previous_question.get("field_key") or "") or None
     question_text = str(question.get("text") or "").strip()
+    published_question_variants = [
+        value for value in (
+            question_text,
+            *[str(item or "").strip() for item in question.get("paraphrases") or []],
+        )
+        if value
+    ]
     asked_field = str(question.get("field_key") or "") or None
     declarative_parts = [
         sentence.strip()
@@ -2147,8 +2154,11 @@ def _semantic_turn_audit(
             )
             or (
                 question_id == expected_question_id
-                and bool(question_text)
-                and graph_proof_checker_v3._question_already_asked(question_text, reply)
+                and bool(published_question_variants)
+                and any(
+                    graph_proof_checker_v3._question_already_asked(variant, reply)
+                    for variant in published_question_variants
+                )
             )
         ),
         "known_fact_not_reasked": not asked_fact_already_known,
