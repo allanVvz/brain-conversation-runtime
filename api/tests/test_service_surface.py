@@ -158,7 +158,8 @@ def test_runtime_repository_has_only_the_reachable_domain_surface():
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
 
-    assert len(functions) == 148
+    assert len(functions) == 147
+    assert "complete_whatsapp_buffer" not in functions
     assert functions.isdisjoint({
         "claim_pending_media_assets",
         "claim_whatsapp_buffer",

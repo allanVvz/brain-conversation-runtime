@@ -12,7 +12,7 @@ from schemas.conversation import (
     ConversationDecision,
     StrictModel,
 )
-from services import conversation_runtime, internal_auth
+from services import conversation_runtime, internal_auth, transport_client
 
 
 router = APIRouter(prefix="/internal/v1/conversations", tags=["conversations"])
@@ -240,10 +240,8 @@ def technical_failure(
     """Quarantine a failed turn without inventing a commercial handoff."""
     internal_auth.authorize_webhook_token(x_webhook_token)
     lead = conversation_runtime.supabase_client.get_lead_by_ref(body.lead_ref) or {}
-    conversation_runtime.supabase_client.complete_whatsapp_buffer(
-        body.buffer_id,
-        "dead_letter",
-        error=body.reason[:1000],
+    transport_client.quarantine_inbound_technical_failure(
+        body.buffer_id, body.lead_ref, body.reason[:1000]
     )
     conversation_runtime.supabase_client.insert_event(
         {
