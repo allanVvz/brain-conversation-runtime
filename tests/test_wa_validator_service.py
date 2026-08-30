@@ -40,6 +40,42 @@ def test_wait_for_turn_audit_v3_tolerates_early_n8n_ack(monkeypatch):
     assert result["commit_state"] == "completed"
 
 
+def test_failed_validator_inbound_is_terminalized_with_its_diagnostic(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        wv.transport_client,
+        "quarantine_inbound_technical_failure",
+        lambda buffer_id, lead_ref, error: calls.append(
+            (buffer_id, lead_ref, error)
+        ) or {"status": "dead_letter"},
+    )
+
+    result = wv._terminalize_failed_validator_inbound(
+        buffer_id="buffer-1",
+        lead_ref=42,
+        error="proof rejected",
+        diagnostic={"proof_observation": {"proof_result": {"valid": False}}},
+    )
+
+    assert calls == [("buffer-1", 42, "proof rejected")]
+    assert result["terminalization"] == {"status": "dead_letter"}
+    assert result["diagnostic"]["proof_observation"]["proof_result"]["valid"] is False
+
+
+def test_failed_validator_inbound_preserves_original_failure_when_terminalization_fails(monkeypatch):
+    def fail(*_args):
+        raise RuntimeError("transport unavailable")
+
+    monkeypatch.setattr(wv.transport_client, "quarantine_inbound_technical_failure", fail)
+
+    result = wv._terminalize_failed_validator_inbound(
+        buffer_id="buffer-1", lead_ref=42, error="proof rejected", diagnostic={}
+    )
+
+    assert result["error"] == "proof rejected"
+    assert result["terminalization_error"] == "transport unavailable"
+
+
 def test_customer_profile_is_resolved_from_the_packaged_api_tree():
     assert wv._CUSTOMER_PROFILES_PATH == API_ROOT / "evaluation" / "wa_validator_customer_profiles.json"
     assert wv._CUSTOMER_PROFILES_PATH.is_file()
