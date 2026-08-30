@@ -21,6 +21,14 @@
       "foco_brilho_riscos": {
         "text": "Meu foco é recuperar o brilho e reduzir os riscos",
         "value": "brilho e riscos"
+      },
+      "estrada_de_chao": {
+        "text": "Não, uso principalmente vias pavimentadas",
+        "value": false
+      },
+      "revestimento_bancos": {
+        "text": "Os bancos têm revestimento de tecido",
+        "value": "tecido"
       }
     },
     "regression_cases": [

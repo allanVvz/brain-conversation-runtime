@@ -49,9 +49,14 @@ def test_customer_profile_is_resolved_from_the_packaged_api_tree():
 def test_appointment_profile_covers_published_polishing_fields():
     answers = wv._customer_profile("appointment")["answers"]
 
-    for field in ("procedimento_anterior", "foco_brilho_riscos"):
+    for field in (
+        "procedimento_anterior",
+        "foco_brilho_riscos",
+        "estrada_de_chao",
+        "revestimento_bancos",
+    ):
         assert answers[field]["text"].strip()
-        assert answers[field]["value"]
+        assert answers[field]["value"] is not None
 
 
 def test_bots_keeps_authorized_persona_when_graph_label_lookup_fails(monkeypatch):
