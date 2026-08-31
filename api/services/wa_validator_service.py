@@ -2281,11 +2281,24 @@ def _semantic_turn_audit(
             or handoff_observed
         ),
     }
-    failures = [name for name, passed in criteria.items() if not passed]
+    # Question ordering belongs to the model's conversational planning.  Keep
+    # observing the historical first-field heuristic so graph/training teams
+    # can compare behavior, but never turn that observation into a runtime or
+    # Validator stop.  Safety and integrity criteria remain hard failures.
+    telemetry_only_criteria = {"first_missing_field_only"}
+    telemetry_failures = [
+        name for name, passed in criteria.items()
+        if not passed and name in telemetry_only_criteria
+    ]
+    failures = [
+        name for name, passed in criteria.items()
+        if not passed and name not in telemetry_only_criteria
+    ]
     return {
         "passed": not failures,
         "criteria": criteria,
         "failures": failures,
+        "telemetry_failures": telemetry_failures,
         "asked_field": asked_field,
         "next_question_node_id": question_id,
         "first_missing_field": first_missing,

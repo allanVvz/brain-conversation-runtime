@@ -809,8 +809,8 @@ def test_semantic_turn_audit_rejects_final_confirmation_while_field_confirmation
     assert "field_confirmation_precedes_final_confirmation" in audit["failures"]
 
 
-def test_semantic_turn_audit_rejects_a_later_field_before_first_missing():
-    """The validator must enforce the same graph-owned order as proof."""
+def test_semantic_turn_audit_logs_a_later_field_before_first_missing():
+    """Field order is model-owned and the legacy sequence is telemetry only."""
     inputs = _semantic_audit_inputs()
     inputs["customer_step"]["intended_facts"] = {}
     inputs["turn"]["text"] = "Perfeito! Qual seu objetivo com o carro?"
@@ -823,12 +823,13 @@ def test_semantic_turn_audit_rejects_a_later_field_before_first_missing():
 
     audit = wv._semantic_turn_audit(**inputs)
 
-    assert audit["passed"] is False
+    assert audit["passed"] is True
     assert audit["asked_field"] == "objective"
-    assert "first_missing_field_only" in audit["failures"]
+    assert "first_missing_field_only" not in audit["failures"]
+    assert "first_missing_field_only" in audit["telemetry_failures"]
 
 
-def test_semantic_turn_audit_rejects_a_question_for_a_field_that_is_not_missing():
+def test_semantic_turn_audit_logs_unmapped_question_order_without_blocking():
     inputs = _semantic_audit_inputs()
     inputs["turn"]["text"] = "Perfeito! Qual seu objetivo com o carro?"
     inputs["proof_record"]["proof_result"]["next_question_node_id"] = "q:objective"
@@ -837,8 +838,9 @@ def test_semantic_turn_audit_rejects_a_question_for_a_field_that_is_not_missing(
 
     audit = wv._semantic_turn_audit(**inputs)
 
-    assert audit["passed"] is False
-    assert "first_missing_field_only" in audit["failures"]
+    assert audit["passed"] is True
+    assert "first_missing_field_only" not in audit["failures"]
+    assert "first_missing_field_only" in audit["telemetry_failures"]
 
 
 def test_semantic_turn_audit_rejects_repeated_reply_and_fallback():
