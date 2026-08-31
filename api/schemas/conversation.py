@@ -183,7 +183,10 @@ class ExtractedFact(StrictModel):
 
 
 class CommercialClaim(StrictModel):
-    claim_type: str = Field(pattern="^(price|availability|schedule|stock|duration|service_detail|other)$")
+    # Claim names are graph-authored.  The proof checker validates them against
+    # the published contract; a backend enum must not reject an otherwise
+    # grounded model response merely because the taxonomy evolved.
+    claim_type: str = Field(min_length=1)
     value: dict[str, Any] = Field(default_factory=dict)
     evidence_node_ids: list[str] = Field(default_factory=list)
     evidence_chunk_ids: list[str] = Field(default_factory=list)

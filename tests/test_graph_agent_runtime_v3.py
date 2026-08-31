@@ -902,6 +902,56 @@ def test_strict_model_parse_failure_emits_only_published_fallback():
     assert response.handoff_required is False
 
 
+def test_semantic_envelope_preserves_direct_model_reply_and_logs_shape_errors(monkeypatch):
+    document = compiled_fixture()
+    pub = publication(document)
+    monkeypatch.setattr(
+        graph_agent_runtime_v3.supabase_client,
+        "get_graph_publication_by_id",
+        lambda _publication_id: pub,
+    )
+    context = ConversationContext(
+        persona_slug="generic", agent_slug="agent", graph_version=1,
+        graph_checksum=document["checksum"], publication_id=pub["id"],
+        messages=[{"role": "user", "content": "quero continuar"}],
+        cart={"facts": {}}, rag_nodes=[], rag_paths=[],
+        graph_contract=document["branch_contracts"]["branch:a"],
+        active_branch_node_id="branch:a", active_branch_node_ids=["branch:a"],
+        branch_node_ids=[], runtime_version="graph_agent_runtime_v3",
+    )
+    direct_reply = "Entendi. Vou seguir por aqui com você."
+    observation = {
+        "interpretation": {
+            "intents": [{"kind": "resume", "evidence_span": "continuar"}],
+            "state_relation": "continue",
+            "answers_field_key": None,
+            "confirmation": {"state": "none"},
+            "branch_selections": [], "facts": [], "invalidated_facts": [],
+            "entities": [], "questions": [], "claims": [],
+            "recommended_next_action": "clarify",
+            "cited_node_ids": [], "cited_chunk_ids": [],
+            "response": {"answer": direct_reply, "question": None,
+                         "question_field_key": None},
+            "handoff_requested": False,
+        },
+        "repair_attempt": 0,
+        "interpretation_parse_errors": ["telemetry:extra_model_key"],
+        "token_usage": {"model_calls": 1},
+    }
+
+    decision, response = graph_agent_runtime_v3.decide(
+        context, model_observation=observation,
+    )
+
+    assert decision.intent != "published_fallback"
+    assert response.reply_text == direct_reply
+    assert response.proof["semantic_contract_telemetry"] == {
+        "parse_errors": ["telemetry:extra_model_key"],
+        "repair_attempt": 0,
+        "model_response_preserved": True,
+    }
+
+
 def test_active_service_branch_authorizes_boolean_service_availability():
     document = compiled_fixture()
     contract = document["branch_contracts"]["branch:a"]
