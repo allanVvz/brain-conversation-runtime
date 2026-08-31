@@ -5348,6 +5348,21 @@ def decide(
     token_usage = (model_observation or {}).get("token_usage")
     if token_usage:
         response = response.model_copy(update={"token_usage": token_usage})
+    if isinstance((model_observation or {}).get("interpretation"), dict):
+        response = response.model_copy(update={
+            "proof": {
+                **response.proof,
+                "semantic_contract_telemetry": {
+                    "parse_errors": list(
+                        (model_observation or {}).get("interpretation_parse_errors") or []
+                    ),
+                    "repair_attempt": int(
+                        (model_observation or {}).get("repair_attempt") or 0
+                    ),
+                    "model_response_preserved": True,
+                },
+            },
+        })
     # A carried-over fact (_seed_carried_facts) only ever lived in
     # context.cart["facts"] for this one turn's in-memory processing -- it
     # was never folded into accepted_facts, the only thing commit_graph_-
@@ -5414,6 +5429,52 @@ def _sanitize_untrusted_service_operations(raw: Any) -> Any:
     return {**raw, "service_operations": operations}
 
 
+def _proposal_from_semantic_observation(
+    observation: dict[str, Any],
+) -> ConversationProposal | None:
+    """Adapt the canonical semantic envelope without rewriting its reply.
+
+    n8n owns the model call and sends ``model_observation.interpretation``.
+    Treating that technical envelope as a legacy ConversationProposal caused
+    its telemetry keys to fail Pydantic validation and replaced a good model
+    answer with a published fallback.  This adapter projects only state/proof
+    fields and keeps ``response.answer`` byte-for-byte as the public reply.
+    """
+    interpretation = observation.get("interpretation")
+    if not isinstance(interpretation, dict):
+        return None
+    response = interpretation.get("response") or {}
+    reply = str(response.get("answer") or interpretation.get("reply") or "").strip()
+    selections = interpretation.get("branch_selections") or []
+    selection = selections[0] if selections and isinstance(selections[0], dict) else {}
+    action = str(selection.get("action") or "none")
+    if action not in {"none", "keep", "select", "switch", "add"}:
+        action = "none"
+    intents = interpretation.get("intents") or []
+    first_intent = intents[0] if intents and isinstance(intents[0], dict) else {}
+    state_relation = str(interpretation.get("state_relation") or "unclear")
+    interaction_kind = {
+        "new_demand": "new_demand",
+        "post_completion": "post_completion_question",
+    }.get(state_relation, "continue_current")
+    facts = [fact for fact in interpretation.get("facts") or [] if isinstance(fact, dict)]
+    claims = [claim for claim in interpretation.get("claims") or [] if isinstance(claim, dict)]
+    return ConversationProposal.model_validate({
+        "interaction_observation": {
+            "kind": interaction_kind,
+            "evidence_span": str(first_intent.get("evidence_span") or ""),
+            "confidence": 1.0 if first_intent else 0.0,
+        },
+        "branch_action": action,
+        "branch_anchor_node_id": selection.get("branch_anchor_node_id"),
+        "branch_evidence_span": str(selection.get("evidence_span") or ""),
+        "extracted_facts": facts,
+        "claims": claims,
+        "cited_node_ids": interpretation.get("cited_node_ids") or [],
+        "cited_chunk_ids": interpretation.get("cited_chunk_ids") or [],
+        "reply": reply,
+        "handoff_requested": interpretation.get("handoff_requested") is True,
+    })
 def _folded_with_origin(text: Any) -> tuple[str, list[int]]:
     """Case/accent-folded text plus the raw offset each folded char came from."""
     folded: list[str] = []
@@ -5772,16 +5833,32 @@ def _decide(
         == "ambiguous"
     ):
         return _service_disambiguation_response(context)
-    raw = observation.get("proposal") if isinstance(observation.get("proposal"), dict) else observation
+    semantic_proposal = _proposal_from_semantic_observation(observation)
+    semantic_direct_reply = semantic_proposal is not None
+    raw = (
+        semantic_proposal.model_dump(mode="json")
+        if semantic_proposal is not None
+        else observation.get("proposal")
+        if isinstance(observation.get("proposal"), dict)
+        else observation
+    )
     raw = _sanitize_untrusted_service_operations(raw)
-    parse_errors = [str(value) for value in observation.get("proposal_parse_errors") or []]
+    # Parser/shape findings are telemetry for semantic envelopes.  Their
+    # normalized projection above is the runtime contract; they must not
+    # replace the model's answer with backend-authored copy. Legacy proposal
+    # parse errors retain their established fallback behavior.
+    parse_errors = [str(value) for value in (
+        observation.get("interpretation_parse_errors")
+        if semantic_direct_reply
+        else observation.get("proposal_parse_errors")
+    ) or []]
     try:
         proposal = ConversationProposal.model_validate(raw)
     except ValidationError as exc:
         return _invalid_proposal_fallback(
             context, raw, [*parse_errors, f"proposal_schema_invalid:{exc.errors(include_url=False)}"]
         )
-    if parse_errors:
+    if parse_errors and not semantic_direct_reply:
         return _invalid_proposal_fallback(context, raw, parse_errors)
     publication = _turn_publication(context)
     if str(publication.get("id")) != str(context.publication_id) or publication.get("checksum") != context.graph_checksum:
@@ -6432,7 +6509,13 @@ def _decide(
             ((pending_confirmation_fact or {}).get("metadata") or {}).get("confirmation")
             or {}
         )
-        if pending_confirmation_fact:
+        if semantic_direct_reply and proposal.reply:
+            # The model owns the conversation.  Proof still reconciles facts,
+            # branches and commercial claims, but it does not append or swap a
+            # deterministic question after a valid direct answer.
+            reply = proposal.reply
+            next_question_id = None
+        elif pending_confirmation_fact:
             confirmation_kind = str(field_confirmation.get("kind") or "")
             already_said = _assistant_replies(context.messages)
             if confirmation_kind == "name":
@@ -6596,6 +6679,7 @@ def _decide(
             not terminal_intent
             and not post_support
             and not doubt
+            and not semantic_direct_reply
             and aggregate_askable
             and "?" not in reply
         ):
